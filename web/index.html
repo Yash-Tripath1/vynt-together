@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>VYNT TOGETHER — one link, two cameras, one booth</title>
+  <link rel="stylesheet" href="/css/style.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%2312100c'/><circle cx='8' cy='8' r='4' fill='%23ffb454'/></svg>" />
+</head>
+<body>
+  <div class="scan"></div>
+  <div class="wrap">
+
+    <header class="top">
+      <div class="brand">VYNT<span>TOGETHER</span></div>
+      <div class="led" id="statusLed"><i></i><span id="statusText">standby</span></div>
+    </header>
+
+    <!-- ============ landing ============ -->
+    <section id="landing">
+      <div class="hero">
+        <h1>one link.<br />two cameras.<br /><em>one booth.</em></h1>
+        <p class="tag">
+          Send the link to your person. See each other's viewfinder while you pose,
+          press <b>click together</b> and the shutter fires on both ends at once —
+          then walk away with a collage.
+        </p>
+        <div class="cta">
+          <button class="btn primary big" id="startBtn">◉ START A SESSION</button>
+          <span class="hint">no account · no app · nothing stored anywhere</span>
+        </div>
+      </div>
+      <div class="how">
+        <div class="how-card"><b>01</b><span>copy your session link</span></div>
+        <div class="how-card"><b>02</b><span>they open it — that's the invite</span></div>
+        <div class="how-card"><b>03</b><span>see each other pose, click together</span></div>
+        <div class="how-card"><b>04</b><span>make the collage, save it, repeat</span></div>
+      </div>
+      <p class="fine">
+        built on the <a href="https://github.com/Yash-Tripath1/Vynt">VYNT</a> filter maths
+        · first draft · your frames go only to your partner through a relay that forgets everything
+      </p>
+    </section>
+
+    <!-- ============ session ============ -->
+    <section id="session" hidden>
+      <div class="roombar">
+        <span class="label">ROOM</span>
+        <code id="roomCode">------</code>
+        <button class="btn small" id="copyBtn">COPY LINK</button>
+        <span class="pill" id="partnerPill">waiting for partner…</span>
+      </div>
+
+      <div class="stage">
+        <div class="pane">
+          <canvas id="myCam" width="480" height="270"></canvas>
+          <div class="pane-label me">ME</div>
+        </div>
+        <div class="pane">
+          <canvas id="theirCam" width="480" height="270"></canvas>
+          <div class="pane-label them">YOU</div>
+          <div class="pane-wait" id="theirWait">waiting for their camera…</div>
+        </div>
+      </div>
+
+      <div class="controls">
+        <div class="chips" id="filterChips"></div>
+        <div class="sliders">
+          <label class="control">
+            <span>GRAIN <output id="grainOut">34</output></span>
+            <input type="range" id="grain" min="0" max="100" value="34" />
+          </label>
+          <label class="control">
+            <span>PIXEL <output id="pixelOut">3</output></span>
+            <input type="range" id="pixel" min="1" max="10" value="3" />
+          </label>
+          <div class="toggles">
+            <label><input type="checkbox" id="stamp" checked /> <span>DATE STAMP</span></label>
+            <label><input type="checkbox" id="mirror" checked /> <span>MIRROR</span></label>
+          </div>
+        </div>
+      </div>
+
+      <div class="shutter-row">
+        <button class="btn primary big" id="togetherBtn">◉ CLICK TOGETHER</button>
+        <button class="btn big" id="soloBtn">JUST ME</button>
+        <button class="btn big" id="collageBtn">MAKE COLLAGE</button>
+        <button class="btn small danger" id="clearBtn">CLEAR</button>
+      </div>
+
+      <div class="strip-wrap">
+        <div class="strip-head"><span class="label">PHOTO STRIP</span><span id="stripCount">0</span></div>
+        <div class="strip" id="strip"></div>
+      </div>
+    </section>
+
+    <!-- ============ overlays ============ -->
+    <div class="countdown" id="countdown" hidden><span id="countNum">3</span></div>
+
+    <div class="modal" id="collageModal" hidden>
+      <div class="modal-box">
+        <div class="modal-head">
+          <span class="label">COLLAGE</span>
+          <button class="btn small danger" id="closeCollage">CLOSE</button>
+        </div>
+        <canvas id="collageCanvas"></canvas>
+        <div class="modal-actions">
+          <button class="btn primary" id="downloadBtn">SAVE PNG</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="error-card" id="errorCard" hidden>
+      <span id="errorMsg"></span>
+      <button class="btn small" id="errorClose">dismiss</button>
+    </div>
+
+    <footer class="foot">
+      vynt together · first draft · filter maths © anadi tripathi
+      · nothing you shoot leaves your browser except on its way to your partner
+    </footer>
+  </div>
+
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>
