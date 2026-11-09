@@ -1,4 +1,4 @@
-/* VYNT TOGETHER — warm CRT camcorder aesthetic (system fonts only, no network). */
+/* VYNT TOGETHER: warm CRT camcorder aesthetic (system fonts only, no network). */
 
 :root {
   --bg: #12100c;
@@ -32,19 +32,6 @@ html, body {
 }
 
 a { color: var(--amber); }
-
-/* faint scanlines over everything */
-.scan {
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  background: repeating-linear-gradient(
-    to bottom,
-    transparent 0 2px,
-    rgba(0, 0, 0, 0.16) 2px 3px
-  );
-  z-index: 50;
-}
 
 .wrap {
   max-width: 1060px;
@@ -89,29 +76,8 @@ a { color: var(--amber); }
 }
 .hero h1 em { font-style: normal; color: var(--amber); }
 .tag { max-width: 560px; color: var(--ink-dim); font-size: 15px; }
-.tag b { color: var(--ink); }
 
 .cta { display: flex; align-items: center; gap: 16px; margin: 26px 0 40px; flex-wrap: wrap; }
-.hint { color: var(--ink-dim); font-size: 12px; }
-
-.how {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-  gap: 10px;
-  margin-bottom: 28px;
-}
-.how-card {
-  background: var(--panel);
-  border: 2px solid var(--line);
-  padding: 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.how-card b { color: var(--amber); font-size: 20px; }
-.how-card span { color: var(--ink-dim); font-size: 12px; }
-
-.fine { color: var(--ink-dim); font-size: 11px; }
 
 /* ---- buttons ---- */
 .btn {

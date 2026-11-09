@@ -3,12 +3,11 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>VYNT TOGETHER — one link, two cameras, one booth</title>
+  <title>VYNT TOGETHER: one link, two cameras, one booth</title>
   <link rel="stylesheet" href="/css/style.css" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%2312100c'/><circle cx='8' cy='8' r='4' fill='%23ffb454'/></svg>" />
 </head>
 <body>
-  <div class="scan"></div>
   <div class="wrap">
 
     <header class="top">
@@ -20,26 +19,11 @@
     <section id="landing">
       <div class="hero">
         <h1>one link.<br />two cameras.<br /><em>one booth.</em></h1>
-        <p class="tag">
-          Send the link to your person. See each other's viewfinder while you pose,
-          press <b>click together</b> and the shutter fires on both ends at once —
-          then walk away with a collage.
-        </p>
+        <p class="tag">See each other live, click together, make a collage.</p>
         <div class="cta">
           <button class="btn primary big" id="startBtn">◉ START A SESSION</button>
-          <span class="hint">no account · no app · nothing stored anywhere</span>
         </div>
       </div>
-      <div class="how">
-        <div class="how-card"><b>01</b><span>copy your session link</span></div>
-        <div class="how-card"><b>02</b><span>they open it — that's the invite</span></div>
-        <div class="how-card"><b>03</b><span>see each other pose, click together</span></div>
-        <div class="how-card"><b>04</b><span>make the collage, save it, repeat</span></div>
-      </div>
-      <p class="fine">
-        built on the <a href="https://github.com/Yash-Tripath1/Vynt">VYNT</a> filter maths
-        · first draft · your frames go only to your partner through a relay that forgets everything
-      </p>
     </section>
 
     <!-- ============ session ============ -->
@@ -59,7 +43,7 @@
         <div class="pane">
           <canvas id="theirCam" width="480" height="270"></canvas>
           <div class="pane-label them">YOU</div>
-          <div class="pane-wait" id="theirWait">waiting for their camera…</div>
+          <div class="pane-wait" id="theirWait">waiting…</div>
         </div>
       </div>
 
@@ -112,12 +96,11 @@
 
     <div class="error-card" id="errorCard" hidden>
       <span id="errorMsg"></span>
-      <button class="btn small" id="errorClose">dismiss</button>
+      <button class="btn small" id="errorClose">X</button>
     </div>
 
     <footer class="foot">
-      vynt together · first draft · filter maths © anadi tripathi
-      · nothing you shoot leaves your browser except on its way to your partner
+      vynt together · filters © anadi tripathi · nothing is stored on the server
     </footer>
   </div>
 

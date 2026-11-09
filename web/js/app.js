@@ -90,11 +90,11 @@ function setStatus(kind, text) {
 }
 
 function updatePartnerUI() {
-  const link = state.rtcMode === 'live' ? 'partner here · VIDEO' : state.rtcMode === 'frames' ? 'partner here · FRAMES' : 'partner here · LIVE'
-  els.partnerPill.textContent = state.partner ? link : 'waiting for partner…'
+  const link = state.rtcMode === 'live' ? 'VIDEO' : state.rtcMode === 'frames' ? 'FRAMES' : 'CONNECTED'
+  els.partnerPill.textContent = state.partner ? link : 'WAITING'
   els.partnerPill.classList.toggle('on', state.partner)
-  if (state.partner) setStatus('live', 'LIVE — 2 in room')
-  else if (net && net.connected) setStatus('open', state.room ? 'connected — waiting for partner' : 'relay up')
+  if (state.partner) setStatus('live', 'LIVE 2/2')
+  else if (net && net.connected) setStatus('open', state.room ? 'connected' : 'relay up')
   if (!state.partner) els.theirWait.hidden = false
 }
 
@@ -169,15 +169,29 @@ async function startCamera() {
     video.playsInline = true
     video.srcObject = cameraStream
     await video.play()
-    booth = createBooth({ video })
+
+    // Wait for real frames before rendering, so the pane never starts half-alive.
+    for (let i = 0; i < 100 && !video.videoWidth; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+    if (!video.videoWidth) throw new Error('camera produced no frames')
+
+    const [track] = cameraStream.getVideoTracks()
+    if (track) {
+      track.addEventListener('ended', () => {
+        if (!state.inSession) return
+        stopCamera()
+        showError('Camera stopped. Reload the page to reconnect it.')
+      })
+    }
+
+    booth = createBooth({ video, canvas: els.myCam })
     applyControlValues()
     cameraReady = true
     startRenderLoop()
     startPreviewLoop()
   } catch (error) {
-    showError(
-      'Camera unavailable. Allow camera access for this page — if you are inside an embedded preview, open the link in a new tab.'
-    )
+    showError('No camera. Allow camera access, or open this page in a real tab.')
   }
 }
 
@@ -186,12 +200,15 @@ function stopCamera() {
     clearInterval(previewTimer)
     previewTimer = null
   }
+  if (booth) {
+    booth.dispose()
+    booth = null
+  }
   if (cameraStream) {
     cameraStream.getTracks().forEach((track) => track.stop())
     cameraStream = null
   }
   cameraReady = false
-  booth = null
 }
 
 function startRenderLoop() {
@@ -201,7 +218,7 @@ function startRenderLoop() {
   const tick = (now) => {
     if (state.inSession && now - last > 33) {
       last = now
-      if (cameraReady && booth) booth.renderTo(els.myCam, 480, 270)
+      if (cameraReady && booth) booth.frame()
       // Live partner viewfinder: copy their WebRTC video into the pane each tick.
       if (state.rtcMode === 'live' && remoteVideo.videoWidth) {
         const ctx = els.theirCam.getContext('2d')
@@ -309,11 +326,7 @@ function ensureNet() {
             }
             break
           case 'join-error':
-            if (msg.reason === 'full') {
-              showError('That room is full — VYNT Together rooms hold exactly two people. Start your own session!')
-            } else {
-              showError('Could not join that room.')
-            }
+            showError(msg.reason === 'full' ? 'Room is full (2 people max). Start a new session.' : 'Could not join that room.')
             // A dead room is a dead end; go back to the landing instead of hanging.
             location.hash = ''
             break
@@ -396,7 +409,7 @@ function maybeStartRtc() {
   state.rtcMode = 'connecting'
   const conn = ensureRtc()
   Promise.resolve()
-    .then(() => conn.addLocal(els.myCam.captureStream(30)))
+    .then(() => conn.addLocal(els.myCam.captureStream(24)))
     .then(() => {
       // Deterministic: exactly one side offers (see rtc.js).
       if (shouldOffer(state.myId, state.partnerId)) return conn.makeOffer()
@@ -432,7 +445,7 @@ async function captureAndSend() {
       encodeFrame(KIND.SHUTTER, { id: state.myId, filter: booth.settings.filterMode, ts: Date.now() }, bytes)
     )
   } catch (error) {
-    showError('Could not take the photo — is the camera still available?')
+    showError('Could not take the photo.')
   }
 }
 
@@ -495,7 +508,7 @@ els.clearBtn.addEventListener('click', () => clearPhotos(true))
 
 els.collageBtn.addEventListener('click', async () => {
   if (state.photos.length === 0) {
-    showError('No photos yet — click the shutter first.')
+    showError('No photos yet.')
     return
   }
   await renderCollage(els.collageCanvas, state.photos)

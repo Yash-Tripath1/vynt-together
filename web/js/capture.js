@@ -1,12 +1,12 @@
-// The booth pipeline: camera -> cover-crop -> pixelation -> Vynt filter -> date stamp.
+// The booth pipeline orchestrator.
 //
-// The filter mathematics in filters.js are the verbatim VYNT port (see LICENSE). What
-// this file adds is just plumbing: one filtered draw shared by the live preview, the
-// low-res preview frames we send to the partner, and the full-res shutter captures.
+// The per-pixel work lives in filter.worker.js (off the main thread) so filtering never
+// blocks the UI or the WebRTC encoder; this file grabs raw camera frames, ships them to
+// the worker, blits the results, and falls back to main-thread rendering if the worker
+// cannot run. Preview JPEGs are downscaled from the already-rendered pane (no second
+// filter pass); shutter captures go through the worker at full size.
 
-import { applyPreset, drawTimestamp, getEffectivePixelSize } from './filters.js'
-import { getFisheyeLut } from './fisheyeLut.js'
-import { computeCoverCrop } from './layout.js'
+import { drawScene } from './render.js'
 
 export const FILTERS = [
   { id: 'original', label: 'ORIGINAL' },
@@ -19,7 +19,16 @@ export const FILTERS = [
   { id: 'goldenfilm', label: 'GOLDEN FILM' },
 ]
 
-export function createBooth({ video }) {
+const PREVIEW_W = 288
+const PREVIEW_H = 162
+const SNAP_W = 1280
+const SNAP_H = 720
+
+function jpegBlob(canvas, quality) {
+  return new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', quality))
+}
+
+export function createBooth({ video, canvas }) {
   const settings = {
     filterMode: 'vyntage',
     grain: 34,
@@ -28,64 +37,165 @@ export function createBooth({ video }) {
     mirror: true,
   }
 
-  // The pixel loop runs at reduced size and is scaled back up with smoothing off --
-  // that IS the pixelation look, and it is also the cheapest render we can do.
-  const work = document.createElement('canvas')
-  const workCtx = work.getContext('2d', { willReadFrequently: true })
+  canvas.width = 480
+  canvas.height = 270
+  const ctx = canvas.getContext('2d')
 
-  function drawFiltered(ctx, width, height) {
-    if (!video || !video.videoWidth || !video.videoHeight) return
-    const px = Math.max(1, Math.round(settings.pixelSize))
-    const w = Math.max(2, Math.round(width / px))
-    const h = Math.max(2, Math.round(height / px))
-    if (work.width !== w || work.height !== h) {
-      work.width = w
-      work.height = h
+  // Derived preview surface: reused, so the 3 fps frame sends cost one blit and one
+  // JPEG encode, never another filter pass.
+  const previewCanvas = document.createElement('canvas')
+  previewCanvas.width = PREVIEW_W
+  previewCanvas.height = PREVIEW_H
+  const previewCtx = previewCanvas.getContext('2d')
+
+  let worker = null
+  let workerReady = false
+  let workerFailed = false
+  let pending = false
+  let disposed = false
+  let nextSnapId = 1
+  const snapWaiters = new Map()
+
+  function failWorker() {
+    workerFailed = true
+    if (worker) {
+      worker.onmessage = null
+      worker.onerror = null
+      worker.terminate()
+      worker = null
     }
-
-    const vw = video.videoWidth || 1280
-    const vh = video.videoHeight || 720
-    const rect = computeCoverCrop(vw, vh, w, h, 1)
-
-    workCtx.save()
-    if (settings.mirror) {
-      workCtx.translate(w, 0)
-      workCtx.scale(-1, 1)
-    }
-    workCtx.drawImage(video, rect.sx, rect.sy, rect.sw, rect.sh, 0, 0, w, h)
-    workCtx.restore()
-
-    applyPreset(workCtx, w, h, settings.filterMode, settings.grain, getFisheyeLut(w, h))
-
-    ctx.imageSmoothingEnabled = false
-    ctx.drawImage(work, 0, 0, w, h, 0, 0, width, height)
-    ctx.imageSmoothingEnabled = true
-
-    if (settings.stamp) drawTimestamp(ctx, width, height, new Date(), 'bottom-right')
+    workerReady = false
+    pending = false
+    for (const [, waiter] of snapWaiters) waiter(null)
+    snapWaiters.clear()
   }
 
-  function renderTo(canvas, width, height) {
-    if (canvas.width !== width || canvas.height !== height) {
-      canvas.width = width
-      canvas.height = height
+  if (typeof Worker !== 'undefined') {
+    try {
+      worker = new Worker('/js/filter.worker.js', { type: 'module' })
+      worker.onmessage = (event) => {
+        const message = event.data
+        if (!message) return
+        if (message.type === 'ready') {
+          workerReady = true
+        } else if (message.type === 'rendered') {
+          pending = false
+          if (message.bitmap) {
+            ctx.drawImage(message.bitmap, 0, 0)
+            message.bitmap.close()
+          }
+        } else if (message.type === 'snapshot') {
+          const waiter = snapWaiters.get(message.id)
+          snapWaiters.delete(message.id)
+          if (waiter) waiter(message.bitmap)
+        } else if (message.type === 'error') {
+          failWorker()
+        }
+      }
+      worker.onerror = () => failWorker()
+      worker.postMessage({ type: 'init' })
+    } catch (error) {
+      worker = null
     }
-    drawFiltered(canvas.getContext('2d'), width, height)
   }
 
-  async function toJpegBlob(width, height, quality) {
-    const canvas = document.createElement('canvas')
-    canvas.width = width
-    canvas.height = height
-    drawFiltered(canvas.getContext('2d'), width, height)
-    return new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', quality))
+  function ready() {
+    return !disposed && video && video.videoWidth > 0 && video.videoHeight > 0
+  }
+
+  /** Called from the render loop at ~30 fps. */
+  function frame() {
+    if (!ready()) return
+
+    if (worker && workerReady && !workerFailed) {
+      if (pending) return
+      pending = true
+      createImageBitmap(video).then(
+        (bitmap) => {
+          if (disposed || !worker) {
+            bitmap.close()
+            pending = false
+            return
+          }
+          try {
+            worker.postMessage({ type: 'frame', bitmap, settings: { ...settings } }, [bitmap])
+          } catch (error) {
+            pending = false
+            failWorker()
+          }
+        },
+        () => {
+          pending = false
+        }
+      )
+      return
+    }
+
+    // Main-thread fallback (worker unavailable or crashed).
+    drawScene(ctx, video, video.videoWidth, video.videoHeight, canvas.width, canvas.height, settings)
+  }
+
+  /** Small JPEG for the partner pane: downscaled from the rendered frame. */
+  function previewBlob() {
+    previewCtx.drawImage(canvas, 0, 0, PREVIEW_W, PREVIEW_H)
+    return jpegBlob(previewCanvas, 0.55)
+  }
+
+  /** The photo itself: full-size filtered capture. */
+  async function snapshotBlob() {
+    if (!ready()) throw new Error('camera not ready')
+
+    if (worker && workerReady && !workerFailed) {
+      const bitmap = await createImageBitmap(video)
+      const id = nextSnapId
+      nextSnapId += 1
+      const out = await new Promise((resolve) => {
+        snapWaiters.set(id, resolve)
+        setTimeout(() => {
+          if (snapWaiters.has(id)) {
+            snapWaiters.delete(id)
+            resolve(null)
+          }
+        }, 4000)
+        try {
+          worker.postMessage({ type: 'snapshot', id, bitmap, outW: SNAP_W, outH: SNAP_H, settings: { ...settings } }, [bitmap])
+        } catch (error) {
+          snapWaiters.delete(id)
+          failWorker()
+          resolve(null)
+        }
+      })
+      if (out) {
+        const snap = document.createElement('canvas')
+        snap.width = SNAP_W
+        snap.height = SNAP_H
+        snap.getContext('2d').drawImage(out, 0, 0)
+        out.close()
+        return jpegBlob(snap, 0.85)
+      }
+      // fall through to the main-thread path on timeout or worker failure
+    }
+
+    const snap = document.createElement('canvas')
+    snap.width = SNAP_W
+    snap.height = SNAP_H
+    drawScene(snap.getContext('2d'), video, video.videoWidth, video.videoHeight, SNAP_W, SNAP_H, settings)
+    return jpegBlob(snap, 0.85)
+  }
+
+  function dispose() {
+    disposed = true
+    failWorker()
   }
 
   return {
     settings,
-    renderTo,
-    /** Small, slow-cadence frame so each partner sees the other's viewfinder. */
-    previewBlob: () => toJpegBlob(288, 162, 0.55),
-    /** The photo itself: full resolution, full quality. */
-    snapshotBlob: () => toJpegBlob(1280, 720, 0.85),
+    frame,
+    previewBlob,
+    snapshotBlob,
+    dispose,
+    get usingWorker() {
+      return Boolean(worker && workerReady && !workerFailed)
+    },
   }
 }
