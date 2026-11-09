@@ -74,6 +74,11 @@ A.ws.send(JSON.stringify({ type: 'countdown', ms: 3000 }))
 const cd = await until(() => B.inbox.find((m) => m.type === 'countdown'), 'B got countdown')
 check(cd && cd.from === welcomeA.id, 'control message tagged with sender id')
 
+// rtc signalling rides the same channel and must never be swallowed by the relay
+A.ws.send(JSON.stringify({ type: 'rtc-offer', sdp: { type: 'offer', sdp: 'x' } }))
+const rtc = await until(() => B.inbox.find((m) => m.type === 'rtc-offer'), 'B got rtc-offer')
+check(Boolean(rtc && rtc.sdp), 'rtc signalling forwarded (live video path)')
+
 // third wheel is refused
 const C = await connect()
 C.ws.send(JSON.stringify({ type: 'join', room: 'SMOKE1' }))

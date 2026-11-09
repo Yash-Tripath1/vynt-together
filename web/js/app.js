@@ -6,8 +6,13 @@
 
 import { KIND, makeRoomCode, encodeFrame } from './codec.js'
 import { createNet } from './net.js'
+import { createRtc, shouldOffer } from './rtc.js'
 import { createBooth, FILTERS } from './capture.js'
 import { renderCollage, downloadCanvas } from './collage.js'
+
+// Public STUN only: enough for same-machine, LAN and most home NATs. Pairs behind
+// symmetric NATs on both ends fall back to frames mode (or add a TURN server below).
+const ICE_SERVERS = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }]
 
 const $ = (sel) => document.querySelector(sel)
 
@@ -50,15 +55,23 @@ const els = {
 const state = {
   room: null,
   myId: null,
+  partnerId: null,
   partner: false,
   inSession: false,
+  rtcMode: 'idle', // idle | connecting | live | frames
   photos: [], // { who:'me'|'them', blob, url, ts }
   previewBusy: false,
   counting: false,
 }
 
+const remoteVideo = document.createElement('video')
+remoteVideo.muted = true
+remoteVideo.playsInline = true
+remoteVideo.autoplay = true
+
 let booth = null
 let net = null
+let rtc = null
 let cameraStream = null
 let cameraReady = false
 let renderStarted = false
@@ -77,11 +90,22 @@ function setStatus(kind, text) {
 }
 
 function updatePartnerUI() {
-  els.partnerPill.textContent = state.partner ? 'partner here · LIVE' : 'waiting for partner…'
+  const link = state.rtcMode === 'live' ? 'partner here · VIDEO' : state.rtcMode === 'frames' ? 'partner here · FRAMES' : 'partner here · LIVE'
+  els.partnerPill.textContent = state.partner ? link : 'waiting for partner…'
   els.partnerPill.classList.toggle('on', state.partner)
   if (state.partner) setStatus('live', 'LIVE — 2 in room')
   else if (net && net.connected) setStatus('open', state.room ? 'connected — waiting for partner' : 'relay up')
   if (!state.partner) els.theirWait.hidden = false
+}
+
+function teardownRtc() {
+  if (rtc) {
+    rtc.close()
+    rtc = null
+  }
+  remoteVideo.srcObject = null
+  state.rtcMode = 'idle'
+  state.partnerId = null
 }
 
 // ---- routing ----------------------------------------------------------------
@@ -98,8 +122,10 @@ function route() {
 }
 
 function showLanding() {
-  // Leaving a session must actually leave: tell the room, and turn the camera off.
+  // Leaving a session must actually leave: tell the room, drop the video call, and
+  // turn the camera off.
   if (net && state.room) net.send({ type: 'leave' })
+  teardownRtc()
   stopCamera()
   state.room = null
   state.partner = false
@@ -173,9 +199,15 @@ function startRenderLoop() {
   renderStarted = true
   let last = 0
   const tick = (now) => {
-    if (state.inSession && cameraReady && booth && now - last > 33) {
+    if (state.inSession && now - last > 33) {
       last = now
-      booth.renderTo(els.myCam, 480, 270)
+      if (cameraReady && booth) booth.renderTo(els.myCam, 480, 270)
+      // Live partner viewfinder: copy their WebRTC video into the pane each tick.
+      if (state.rtcMode === 'live' && remoteVideo.videoWidth) {
+        const ctx = els.theirCam.getContext('2d')
+        ctx.drawImage(remoteVideo, 0, 0, els.theirCam.width, els.theirCam.height)
+        els.theirWait.hidden = true
+      }
     }
     requestAnimationFrame(tick)
   }
@@ -186,7 +218,12 @@ function startPreviewLoop() {
   if (previewTimer) clearInterval(previewTimer)
   previewTimer = setInterval(async () => {
     if (!state.inSession || !cameraReady || !booth || !state.partner || !net || !net.connected) return
-    if (document.hidden || state.previewBusy) return
+    // With live video flowing and the tab visible, frames are redundant. When the tab
+    // is hidden (rAF/canvas freeze) or video failed over, frames keep the pane alive --
+    // the browser throttles this to ~1/s in the background, and a slideshow beats a
+    // frozen frame.
+    if (state.rtcMode === 'live' && !document.hidden) return
+    if (state.previewBusy) return
     state.previewBusy = true
     try {
       const blob = await booth.previewBlob()
@@ -260,11 +297,16 @@ function ensureNet() {
         switch (msg.type) {
           case 'welcome':
             state.myId = msg.id
+            maybeStartRtc()
             break
           case 'joined':
             state.myId = msg.id || state.myId
             state.partner = (msg.peers || 1) >= 2
             updatePartnerUI()
+            if (state.partner) {
+              sendRtcHello()
+              maybeStartRtc()
+            }
             break
           case 'join-error':
             if (msg.reason === 'full') {
@@ -278,9 +320,12 @@ function ensureNet() {
           case 'peer-joined':
             state.partner = true
             updatePartnerUI()
+            sendRtcHello()
+            maybeStartRtc()
             break
           case 'peer-left':
             state.partner = false
+            teardownRtc()
             updatePartnerUI()
             break
           case 'countdown':
@@ -290,6 +335,15 @@ function ensureNet() {
             break
           case 'clear':
             clearPhotos(false)
+            break
+          case 'rtc-hello':
+            state.partnerId = msg.from || state.partnerId
+            maybeStartRtc()
+            break
+          case 'rtc-offer':
+          case 'rtc-answer':
+          case 'rtc-ice':
+            ensureRtc().handleSignal(msg)
             break
         }
       },
@@ -303,6 +357,54 @@ function ensureNet() {
       },
     },
   })
+}
+
+// ---- live video (WebRTC) -------------------------------------------------------
+
+function ensureRtc() {
+  if (rtc) return rtc
+  rtc = createRtc({
+    iceServers: ICE_SERVERS,
+    send: (obj) => {
+      if (net) net.send(obj)
+    },
+    onRemoteStream: (stream) => {
+      remoteVideo.srcObject = stream
+      remoteVideo.play().catch(() => undefined)
+    },
+    onState: (connectionState) => {
+      if (connectionState === 'connected') {
+        state.rtcMode = 'live'
+      } else if (connectionState === 'failed' || connectionState === 'closed') {
+        // Fall back to preview frames rather than showing a frozen pane.
+        state.rtcMode = 'frames'
+      }
+      updatePartnerUI()
+    },
+  })
+  return rtc
+}
+
+function sendRtcHello() {
+  if (net) net.send({ type: 'rtc-hello' })
+}
+
+function maybeStartRtc() {
+  if (!state.inSession || !state.partner || !state.myId || !state.partnerId) return
+  if (state.rtcMode === 'connecting' || state.rtcMode === 'live') return
+
+  state.rtcMode = 'connecting'
+  const conn = ensureRtc()
+  Promise.resolve()
+    .then(() => conn.addLocal(els.myCam.captureStream(30)))
+    .then(() => {
+      // Deterministic: exactly one side offers (see rtc.js).
+      if (shouldOffer(state.myId, state.partnerId)) return conn.makeOffer()
+    })
+    .catch(() => {
+      state.rtcMode = 'frames'
+      updatePartnerUI()
+    })
 }
 
 async function drawTheirPreview(payload) {

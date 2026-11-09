@@ -1,15 +1,32 @@
 # VYNT TOGETHER
 
-**One link, two cameras, one booth.** Send a session link to your person, see each other's
-viewfinder while you pose, press **CLICK TOGETHER** and the shutter fires on both ends at
+**One link, two cameras, one booth.** Send a session link to your person, see each other
+**live** while you pose, press **CLICK TOGETHER** and the shutter fires on both ends at
 once — then make a collage from everything you shot.
 
 No account. No app. Nothing stored anywhere.
 
-> **Status: second draft (v0.2.0).** The filter maths, room relay and protocol are
-> unit-tested (19 tests) and the relay passes a 13-check end-to-end smoke run, including
-> regression tests for every bug the first draft shipped with. Grab a friend and be the
-> first real-world test — see "Quick start".
+> **Status: v0.3.0 — live viewfinders.** The two panes are real, two-way WebRTC video
+> (filtered, P2P, DTLS-SRTP encrypted); the relay handles signalling, stills and the
+> strip. Unit tests + a 14-check end-to-end smoke run. Grab a friend and be the first
+> real-world test — see "Quick start".
+
+## What changed in v0.3.0 — live viewfinders (phase 2)
+
+The partner pane used to refresh ~3×/second via relayed JPEG frames — alive, but a
+slideshow. Now both viewfinders are **live WebRTC video**:
+
+- Each side streams its *filtered* canvas (`captureStream`) peer-to-peer — what they see
+  moving is exactly what the shutter will capture.
+- **Signalling rides the existing relay** (SDP + ICE are ordinary control messages), so
+  the server needed zero changes. Negotiation is glare-free: the peer with the smaller
+  server-assigned id makes the offer.
+- **Graceful fallback, always:** if the P2P path can't connect (strict double-NAT pairs
+  without a TURN server) or your tab goes hidden (canvas pipelines freeze off-screen),
+  the old JPEG-frame path carries the pane automatically — the pill shows `VIDEO` or
+  `FRAMES` so you know which one you're on.
+- Known limits, honestly: no audio (it's a booth), and a hidden tab degrades to ~1 fps
+  frames instead of true video. Both are on the roadmap below.
 
 ## What changed in the second draft
 
@@ -38,25 +55,24 @@ A full self-audit found and fixed nine issues in the first draft:
 ## How it works
 
 ```
-   you                                                     your person
-   ────                                                    ───────────
-   camera ──► VYNT filter ──► tiny preview frames (≈3/s) ──► their screen
-      │                              ▲        │
-      │                              │        ▼
-      └──► shutter still (full-res) ──┼──► shared photo strip
-                                     │
-                            ┌────────┴────────┐
-                            │  tiny relay     │   forwards only, stores nothing,
-                            │  (this server)  │   rooms evaporate when empty
-                            └────────┬────────┘
-                                     │
-   their screen ◄── preview frames ──┘
-   their shutter stills land in the same strip on your side
+   you                                                      your person
+   ────                                                     ───────────
+   camera ──► VYNT filter ──► live video track ═══P2P═══► their viewfinder
+      │              (canvas)        (WebRTC, encrypted)      │
+      │                                   ▲                   │
+      │                     signalling: SDP/ICE only          │
+      │                          ┌────────┴────────┐          ▼
+      └──► shutter still ──────► │  tiny relay     │ ◄── their shutter stills
+             (full-res, via) ──► │  (this server)  │ ──► shared photo strip
+                                 │  stores nothing │
+                                 └─────────────────┘
+   fallback when P2P can't connect or the tab is hidden: relayed JPEG frames
 ```
 
-* **Preview frames, not video.** Each side streams ~3 small JPEGs per second so you can
-  see what the other is framing. That's deliberately enough for posing together — and it
-  keeps the whole thing light, NAT-proof and free to host.
+* **Live viewfinders, not video chat.** Both panes stream filtered video peer-to-peer
+  (WebRTC). The relay only brokers the introduction (SDP/ICE) — media never touches the
+  server. If the P2P path fails or your tab goes hidden, low-fps relayed frames keep the
+  pane alive instead of freezing.
 * **Click together.** A shared 3-2-1 countdown fires both shutters within one beat. There
   is also a *JUST ME* button for vanity shots.
 * **Collage.** Both sides hold every photo, so either side can lay out the strip and save
@@ -89,8 +105,8 @@ http://localhost:8765`) or deploy (below); both give you HTTPS. Across the inter
 deploy.
 
 ```bash
-npm test                                  # 19 unit tests
-node scripts/smoke.mjs http://localhost:8765   # 13-check end-to-end relay smoke
+npm test                                  # 22 unit tests
+node scripts/smoke.mjs http://localhost:8765   # 14-check end-to-end relay smoke
 ```
 
 ## Deploying
@@ -131,7 +147,8 @@ scripts/smoke.mjs    end-to-end relay smoke
 
 * ✅ shared viewfinders via preview frames, synced shutter, strip, collage
 * ✅ second-draft audit: countdown, overlays, ghost rooms, camera teardown, docs
-* ☐ live video viewfinders (WebRTC + TURN) — the `vynt-live` upgrade
+* ✅ live two-way video viewfinders (WebRTC P2P, relay signalling, frames fallback)
+* ☐ TURN option + audio mode for the full "in the room" feeling
 * ☐ rooms for more than two
 * ☐ countdown speed presets, collages with captions, strip-as-GIF
 * ☐ a card on [yash-tripath1.github.io/Vynt](https://yash-tripath1.github.io/Vynt/) pointing here
