@@ -16,6 +16,11 @@
 
 * { box-sizing: border-box; }
 
+/* The overlays (.countdown, .modal, .error-card, .pane-wait) use display:flex, which
+   silently beats the browser's default [hidden]{display:none} rule and left the
+   countdown overlay sitting over the page at load. This restores the contract. */
+[hidden] { display: none !important; }
+
 html, body {
   margin: 0;
   background: var(--bg);

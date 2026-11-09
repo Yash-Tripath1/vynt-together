@@ -6,9 +6,32 @@ once — then make a collage from everything you shot.
 
 No account. No app. Nothing stored anywhere.
 
-> **Status: first draft (v0.1.0).** The filter maths, room relay and protocol are
-> unit-tested (19 tests) and the relay passes an end-to-end smoke run. Grab a friend and
-> be the first real-world test — see "Quick start".
+> **Status: second draft (v0.2.0).** The filter maths, room relay and protocol are
+> unit-tested (19 tests) and the relay passes a 13-check end-to-end smoke run, including
+> regression tests for every bug the first draft shipped with. Grab a friend and be the
+> first real-world test — see "Quick start".
+
+## What changed in the second draft
+
+A full self-audit found and fixed nine issues in the first draft:
+
+1. **Countdown ping-pong (critical).** A received "click together" countdown was
+   re-broadcast to the room, so two connected clients bounced it between each other
+   forever. Received countdowns now run locally only.
+2. **Invisible overlays (critical — the "stuck page").** The countdown, collage modal and
+   error card set `display:flex`, which overrides the browser's `[hidden]` rule, so the
+   countdown overlay sat over the page from the moment it loaded. Fixed globally.
+3. **Ghost rooms.** Switching rooms without closing the tab left the abandoned room's
+   other person waiting forever. Re-joins now notify the room you left (and re-joining
+   your own room is a harmless no-op).
+4. **The camera never turned off.** Leaving a session now stops the camera tracks (LED
+   goes off) and tears down the preview loop.
+5. **Crash when the camera is denied.** Clicking a filter chip with no camera threw.
+6. **`scrollIntoView` dragged the whole page** on mobile when a photo landed in the strip.
+7. **Intentional disconnects reported "reconnecting…"** forever.
+8. **Frame grabs could throw** on a not-yet-ready video element.
+9. **README told you to use `http://<lan-ip>:8765` from a phone** — browsers refuse camera
+   access on insecure origins, so that advice could never work. Corrected.
 
 ---
 
@@ -58,14 +81,16 @@ npm start            # relay + web app on http://localhost:8765
 2. Open the link in a **second tab** (or a second browser) to play both sides.
 3. Allow the camera on both, watch the partner viewfinder appear, then **CLICK TOGETHER**.
 
-**Testing with a real person on your network:** the server binds `0.0.0.0`, so a phone or
-laptop on the same Wi-Fi can join via `http://<your-lan-ip>:8765` (find it with
-`ipconfig` / `ip addr`). For someone across the internet, deploy (below) or put a tunnel
-in front (`ngrok http 8765` etc.).
+**Testing with a real person.** Two tabs on one machine works out of the box. For a phone
+or a friend on your LAN, note that browsers only allow cameras on **secure origins** —
+plain `http://192.168.x.x:8765` will load the page but the camera will be refused. Use a
+tunnel in front of the server (`ngrok http 8765`, `cloudflared tunnel --url
+http://localhost:8765`) or deploy (below); both give you HTTPS. Across the internet:
+deploy.
 
 ```bash
-npm test                      # 19 unit tests
-node scripts/smoke.mjs http://localhost:8765   # end-to-end relay smoke
+npm test                                  # 19 unit tests
+node scripts/smoke.mjs http://localhost:8765   # 13-check end-to-end relay smoke
 ```
 
 ## Deploying
@@ -105,6 +130,7 @@ scripts/smoke.mjs    end-to-end relay smoke
 ## Roadmap
 
 * ✅ shared viewfinders via preview frames, synced shutter, strip, collage
+* ✅ second-draft audit: countdown, overlays, ghost rooms, camera teardown, docs
 * ☐ live video viewfinders (WebRTC + TURN) — the `vynt-live` upgrade
 * ☐ rooms for more than two
 * ☐ countdown speed presets, collages with captions, strip-as-GIF

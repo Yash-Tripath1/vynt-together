@@ -156,6 +156,17 @@ wss.on('connection', (ws) => {
         return
       }
 
+      // Re-joining the room you are already in is a no-op (the reconnect case).
+      if (rooms.roomOfPeer(ws) === roomId) {
+        send(ws, { type: 'joined', room: roomId, id, peers: rooms.roommates(ws).length + 1 })
+        return
+      }
+
+      // Defecting from another room? That room must hear about it, or its other occupant
+      // waits on a ghost forever.
+      const left = rooms.leave(ws)
+      if (left) broadcast(left.others, { type: 'peer-left' })
+
       const result = rooms.join(roomId, ws)
       if (!result.ok) {
         send(ws, { type: 'join-error', reason: result.reason })
@@ -196,5 +207,8 @@ wss.on('connection', (ws) => {
 })
 
 server.listen(PORT, HOST, () => {
-  log(`vynt together relay listening on http://${HOST}:${PORT}`)
+  // 0.0.0.0 is where we LISTEN, not something you can browse to -- say so, or people
+  // copy http://0.0.0.0:8765 into their browser and conclude the server is broken.
+  const displayHost = HOST === '0.0.0.0' ? 'localhost' : HOST
+  log(`vynt together listening on http://${displayHost}:${PORT}  (bound ${HOST}) -- open that URL in your browser`)
 })

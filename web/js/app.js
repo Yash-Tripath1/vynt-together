@@ -51,6 +51,7 @@ const state = {
   room: null,
   myId: null,
   partner: false,
+  inSession: false,
   photos: [], // { who:'me'|'them', blob, url, ts }
   previewBusy: false,
   counting: false,
@@ -58,7 +59,10 @@ const state = {
 
 let booth = null
 let net = null
+let cameraStream = null
 let cameraReady = false
+let renderStarted = false
+let previewTimer = null
 
 // ---- helpers ----------------------------------------------------------------
 
@@ -94,8 +98,14 @@ function route() {
 }
 
 function showLanding() {
+  // Leaving a session must actually leave: tell the room, and turn the camera off.
+  if (net && state.room) net.send({ type: 'leave' })
+  stopCamera()
   state.room = null
   state.partner = false
+  state.inSession = false
+  state.counting = false
+  els.countdown.hidden = true
   els.session.hidden = true
   els.landing.hidden = false
   setStatus('', 'standby')
@@ -104,11 +114,13 @@ function showLanding() {
 async function enterSession(room) {
   const firstTime = state.room !== room
   state.room = room
+  state.inSession = true
   els.landing.hidden = true
   els.session.hidden = false
   els.roomCode.textContent = room
 
   if (firstTime) {
+    clearPhotos(false) // a new session starts with a clean strip
     await startCamera()
     ensureNet()
     buildFilterChips()
@@ -122,14 +134,14 @@ async function enterSession(room) {
 async function startCamera() {
   if (cameraReady) return
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({
+    cameraStream = await navigator.mediaDevices.getUserMedia({
       video: { width: { ideal: 1280 }, height: { ideal: 720 } },
       audio: false,
     })
     const video = document.createElement('video')
     video.muted = true
     video.playsInline = true
-    video.srcObject = stream
+    video.srcObject = cameraStream
     await video.play()
     booth = createBooth({ video })
     applyControlValues()
@@ -143,10 +155,25 @@ async function startCamera() {
   }
 }
 
+function stopCamera() {
+  if (previewTimer) {
+    clearInterval(previewTimer)
+    previewTimer = null
+  }
+  if (cameraStream) {
+    cameraStream.getTracks().forEach((track) => track.stop())
+    cameraStream = null
+  }
+  cameraReady = false
+  booth = null
+}
+
 function startRenderLoop() {
+  if (renderStarted) return
+  renderStarted = true
   let last = 0
   const tick = (now) => {
-    if (cameraReady && now - last > 33) {
+    if (state.inSession && cameraReady && booth && now - last > 33) {
       last = now
       booth.renderTo(els.myCam, 480, 270)
     }
@@ -156,8 +183,9 @@ function startRenderLoop() {
 }
 
 function startPreviewLoop() {
-  setInterval(async () => {
-    if (!cameraReady || !state.partner || !net || !net.connected) return
+  if (previewTimer) clearInterval(previewTimer)
+  previewTimer = setInterval(async () => {
+    if (!state.inSession || !cameraReady || !booth || !state.partner || !net || !net.connected) return
     if (document.hidden || state.previewBusy) return
     state.previewBusy = true
     try {
@@ -180,7 +208,7 @@ function buildFilterChips() {
     button.className = 'chip'
     button.textContent = filter.label
     button.addEventListener('click', () => {
-      booth.settings.filterMode = filter.id
+      if (booth) booth.settings.filterMode = filter.id
       buildFilterChips()
     })
     if (booth && booth.settings.filterMode === filter.id) button.classList.add('is-active')
@@ -244,6 +272,8 @@ function ensureNet() {
             } else {
               showError('Could not join that room.')
             }
+            // A dead room is a dead end; go back to the landing instead of hanging.
+            location.hash = ''
             break
           case 'peer-joined':
             state.partner = true
@@ -254,7 +284,9 @@ function ensureNet() {
             updatePartnerUI()
             break
           case 'countdown':
-            runCountdown(msg.ms || 3000)
+            // broadcast:false is load-bearing -- a received countdown must never be
+            // re-broadcast, or the two clients ping-pong it forever.
+            runCountdown(msg.ms || 3000, { broadcast: false })
             break
           case 'clear':
             clearPhotos(false)
@@ -289,13 +321,17 @@ async function drawTheirPreview(payload) {
 // ---- shutter -----------------------------------------------------------------
 
 async function captureAndSend() {
-  if (!cameraReady) return
-  const blob = await booth.snapshotBlob()
-  addPhoto('me', blob)
-  const bytes = new Uint8Array(await blob.arrayBuffer())
-  net.sendBinary(
-    encodeFrame(KIND.SHUTTER, { id: state.myId, filter: booth.settings.filterMode, ts: Date.now() }, bytes)
-  )
+  if (!cameraReady || !booth || !net) return
+  try {
+    const blob = await booth.snapshotBlob()
+    addPhoto('me', blob)
+    const bytes = new Uint8Array(await blob.arrayBuffer())
+    net.sendBinary(
+      encodeFrame(KIND.SHUTTER, { id: state.myId, filter: booth.settings.filterMode, ts: Date.now() }, bytes)
+    )
+  } catch (error) {
+    showError('Could not take the photo — is the camera still available?')
+  }
 }
 
 function runCountdown(ms, { broadcast = true } = {}) {
@@ -338,7 +374,8 @@ function addPhoto(who, blob) {
   tag.textContent = who === 'me' ? 'ME' : 'YOU'
   div.append(img, tag)
   els.strip.appendChild(div)
-  div.scrollIntoView({ inline: 'end' })
+  // scrollLeft, not scrollIntoView -- the latter drags the whole page on mobile.
+  els.strip.scrollLeft = els.strip.scrollWidth
   els.stripCount.textContent = String(state.photos.length)
 }
 

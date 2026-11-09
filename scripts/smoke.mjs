@@ -92,9 +92,41 @@ C.ws.send(JSON.stringify({ type: 'join', room: 'SMOKE1' }))
 const late = await until(() => C.inbox.find((m) => m.type === 'joined'), 'C joins after empty')
 check(Boolean(late), 'room evaporated and is re-usable')
 
+// regression: defecting to another room must notify the room you abandoned
+const D = await connect()
+const E = await connect()
+D.ws.send(JSON.stringify({ type: 'join', room: 'SMOKE2' }))
+E.ws.send(JSON.stringify({ type: 'join', room: 'SMOKE2' }))
+// E joins second, so E's `joined` is the one that reports the full room.
+await until(() => E.inbox.find((m) => m.type === 'joined' && m.peers === 2), 'D+E paired')
+D.ws.send(JSON.stringify({ type: 'join', room: 'SMOKE3' })) // D defects
+check(
+  Boolean(await until(() => E.inbox.find((m) => m.type === 'peer-left'), 'E told D left')),
+  'defection notifies the abandoned room'
+)
+
+// regression: messages never leak across rooms
+const F = await connect()
+F.ws.send(JSON.stringify({ type: 'join', room: 'SMOKE3' }))
+await until(() => F.inbox.find((m) => m.type === 'joined'), 'F joins D in SMOKE3')
+E.ws.send(Uint8Array.from([7, 7, 7])) // E is alone in SMOKE2 now
+await wait(300)
+check(!F.inbox.some((m) => m.binary), 'binary does not leak into other rooms')
+
+// regression: re-joining your own room is a harmless no-op
+D.inbox.length = 0
+F.ws.send(JSON.stringify({ type: 'join', room: 'SMOKE3' }))
+const rejoin = await until(() => F.inbox.filter((m) => m.type === 'joined').length >= 2, 'F re-joined')
+check(Boolean(rejoin), 'same-room rejoin answers joined again')
+await wait(150)
+check(!D.inbox.some((m) => m.type === 'peer-left'), 'same-room rejoin does not flap the room')
+
 A.ws.close()
 B.ws.close()
 C.ws.close()
+D.ws.close()
+E.ws.close()
+F.ws.close()
 await wait(200)
 
 console.log(failures.length === 0 ? '\nSMOKE PASS' : `\nSMOKE FAIL: ${failures.join('; ')}`)

@@ -19,6 +19,7 @@ export function createNet({ url, handlers }) {
     }
 
     ws.onclose = () => {
+      if (closed) return // deliberate close: nobody needs a "reconnecting" status
       handlers.onStatus('closed')
       if (!closed) {
         const delay = Math.min(10_000, 1_000 * 2 ** retry)

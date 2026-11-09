@@ -34,6 +34,7 @@ export function createBooth({ video }) {
   const workCtx = work.getContext('2d', { willReadFrequently: true })
 
   function drawFiltered(ctx, width, height) {
+    if (!video || !video.videoWidth || !video.videoHeight) return
     const px = Math.max(1, Math.round(settings.pixelSize))
     const w = Math.max(2, Math.round(width / px))
     const h = Math.max(2, Math.round(height / px))
