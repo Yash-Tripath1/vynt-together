@@ -1,8 +1,9 @@
 // VYNT Together -- session orchestration.
 //
-// One page, hash-routed rooms (#/r/CODE). Each side streams tiny filtered preview
-// frames so both see the same viewfinders, and full-res filtered stills on the shutter.
-// A "click together" countdown fires both shutters within one beat of each other.
+// One page, hash-routed rooms (#/r/CODE). Each side sends its filtered viewfinder as a
+// real WebRTC video track (Meet-style: hardware encoded, peer to peer), with a fast
+// frame stream over the relay when video cannot connect. Full-res filtered stills land
+// on the shutter. A "click together" countdown fires both shutters within one beat.
 
 import { KIND, makeRoomCode, encodeFrame } from './codec.js'
 import { createNet } from './net.js'
@@ -10,9 +11,14 @@ import { createRtc, shouldOffer } from './rtc.js'
 import { createBooth, FILTERS } from './capture.js'
 import { renderCollage, downloadCanvas } from './collage.js'
 
-// Public STUN only: enough for same-machine, LAN and most home NATs. Pairs behind
-// symmetric NATs on both ends fall back to frames mode (or add a TURN server below).
-const ICE_SERVERS = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }]
+// Public STUN first, then the free OpenRelay TURN (UDP + TCP-443) so the video call
+// still connects through symmetric NATs and networks where UDP never flows. For
+// production, swap in your own TURN here (any coturn/Twilio/Metered credentials work).
+const ICE_SERVERS = [
+  { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+  { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+]
 
 const $ = (sel) => document.querySelector(sel)
 
@@ -59,7 +65,7 @@ const state = {
   partner: false,
   inSession: false,
   rtcMode: 'idle', // idle | connecting | live | frames
-  photos: [], // { who:'me'|'them', blob, url, ts }
+  photos: [], // { who:'me'|'them', blob, url, ts, selected }
   previewBusy: false,
   counting: false,
 }
@@ -235,10 +241,9 @@ function startPreviewLoop() {
   if (previewTimer) clearInterval(previewTimer)
   previewTimer = setInterval(async () => {
     if (!state.inSession || !cameraReady || !booth || !state.partner || !net || !net.connected) return
-    // With live video flowing and the tab visible, frames are redundant. When the tab
-    // is hidden (rAF/canvas freeze) or video failed over, frames keep the pane alive --
-    // the browser throttles this to ~1/s in the background, and a slideshow beats a
-    // frozen frame.
+    // With live video flowing and the tab visible, frames are redundant. When video
+    // cannot connect, or the tab is hidden (rAF/canvas freeze), frames carry the pane
+    // at a video-like rate (the browser throttles this to ~1/s in the background).
     if (state.rtcMode === 'live' && !document.hidden) return
     if (state.previewBusy) return
     state.previewBusy = true
@@ -249,7 +254,7 @@ function startPreviewLoop() {
     } finally {
       state.previewBusy = false
     }
-  }, 350)
+  }, 100)
 }
 
 // ---- controls ----------------------------------------------------------------
@@ -409,7 +414,7 @@ function maybeStartRtc() {
   state.rtcMode = 'connecting'
   const conn = ensureRtc()
   Promise.resolve()
-    .then(() => conn.addLocal(els.myCam.captureStream(24)))
+    .then(() => conn.addLocal((booth && booth.stream) || els.myCam.captureStream(30)))
     .then(() => {
       // Deterministic: exactly one side offers (see rtc.js).
       if (shouldOffer(state.myId, state.partnerId)) return conn.makeOffer()
@@ -476,22 +481,34 @@ els.soloBtn.addEventListener('click', () => captureAndSend())
 // ---- photo strip ---------------------------------------------------------------
 
 function addPhoto(who, blob) {
-  const url = URL.createObjectURL(blob)
-  state.photos.push({ who, blob, url, ts: Date.now() })
+  const photo = { who, blob, url: URL.createObjectURL(blob), ts: Date.now(), selected: true }
+  state.photos.push(photo)
 
   const div = document.createElement('div')
   div.className = `thumb ${who}`
   const img = document.createElement('img')
-  img.src = url
+  img.src = photo.url
   img.alt = who === 'me' ? 'my photo' : 'their photo'
   const tag = document.createElement('span')
   tag.className = 'who'
   tag.textContent = who === 'me' ? 'ME' : 'YOU'
   div.append(img, tag)
+  // Tap a thumb to include or drop it from the collage.
+  div.addEventListener('click', () => {
+    photo.selected = !photo.selected
+    div.classList.toggle('off', !photo.selected)
+    updateCollageBtn()
+  })
   els.strip.appendChild(div)
   // scrollLeft, not scrollIntoView -- the latter drags the whole page on mobile.
   els.strip.scrollLeft = els.strip.scrollWidth
   els.stripCount.textContent = String(state.photos.length)
+  updateCollageBtn()
+}
+
+function updateCollageBtn() {
+  const n = state.photos.filter((photo) => photo.selected).length
+  els.collageBtn.textContent = `MAKE COLLAGE (${n})`
 }
 
 function clearPhotos(announce) {
@@ -499,6 +516,7 @@ function clearPhotos(announce) {
   state.photos = []
   els.strip.textContent = ''
   els.stripCount.textContent = '0'
+  updateCollageBtn()
   if (announce && net) net.send({ type: 'clear' })
 }
 
@@ -507,11 +525,12 @@ els.clearBtn.addEventListener('click', () => clearPhotos(true))
 // ---- collage --------------------------------------------------------------------
 
 els.collageBtn.addEventListener('click', async () => {
-  if (state.photos.length === 0) {
-    showError('No photos yet.')
+  const chosen = state.photos.filter((photo) => photo.selected)
+  if (chosen.length === 0) {
+    showError('No photos selected.')
     return
   }
-  await renderCollage(els.collageCanvas, state.photos)
+  await renderCollage(els.collageCanvas, chosen)
   els.collageModal.hidden = false
 })
 

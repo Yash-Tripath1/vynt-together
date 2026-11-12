@@ -1,10 +1,12 @@
 // The booth pipeline orchestrator.
 //
 // The per-pixel work lives in filter.worker.js (off the main thread) so filtering never
-// blocks the UI or the WebRTC encoder; this file grabs raw camera frames, ships them to
-// the worker, blits the results, and falls back to main-thread rendering if the worker
-// cannot run. Preview JPEGs are downscaled from the already-rendered pane (no second
-// filter pass); shutter captures go through the worker at full size.
+// blocks the UI or the WebRTC encoder. Live frames are grabbed already scaled to the
+// 480x270 pipeline size (one cheap GPU resize instead of a full 720p copy), rendered in
+// the worker, and pushed into the canvas capture stream the moment they land, so the
+// live viewfinder moves like a video call. Preview JPEGs are downscaled from the
+// already-rendered pane (no second filter pass); shutter captures go through the
+// worker at full size.
 
 import { drawScene } from './render.js'
 
@@ -19,13 +21,27 @@ export const FILTERS = [
   { id: 'goldenfilm', label: 'GOLDEN FILM' },
 ]
 
-const PREVIEW_W = 288
-const PREVIEW_H = 162
+const LIVE_W = 480
+const LIVE_H = 270
+const PREVIEW_W = 384
+const PREVIEW_H = 216
 const SNAP_W = 1280
 const SNAP_H = 720
 
 function jpegBlob(canvas, quality) {
   return new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', quality))
+}
+
+/** Cover-resize the current camera frame to roughly LIVE_W x LIVE_H before it ever
+ * touches the main thread. createImageBitmap does the scale during the grab, so a 720p
+ * camera costs the same as a webcam: no full-size copy, no jank. */
+function grabLiveFrame(video) {
+  const scale = Math.max(LIVE_W / video.videoWidth, LIVE_H / video.videoHeight)
+  return createImageBitmap(video, {
+    resizeWidth: Math.max(LIVE_W, Math.round(video.videoWidth * scale)),
+    resizeHeight: Math.max(LIVE_H, Math.round(video.videoHeight * scale)),
+    resizeQuality: 'low',
+  })
 }
 
 export function createBooth({ video, canvas }) {
@@ -37,16 +53,40 @@ export function createBooth({ video, canvas }) {
     mirror: true,
   }
 
-  canvas.width = 480
-  canvas.height = 270
+  canvas.width = LIVE_W
+  canvas.height = LIVE_H
   const ctx = canvas.getContext('2d')
 
-  // Derived preview surface: reused, so the 3 fps frame sends cost one blit and one
+  // Derived preview surface: reused, so the fallback frame sends cost one blit and one
   // JPEG encode, never another filter pass.
   const previewCanvas = document.createElement('canvas')
   previewCanvas.width = PREVIEW_W
   previewCanvas.height = PREVIEW_H
   const previewCtx = previewCanvas.getContext('2d')
+
+  // The live viewfinder stream (canvas -> RTC video track). Manual-mode capture: every
+  // rendered frame is pushed the instant it lands, so nothing waits on a capture timer.
+  let stream = null
+  let pushFrame = () => {}
+  try {
+    stream = canvas.captureStream(0)
+    const track = stream.getVideoTracks()[0]
+    if (track && typeof track.requestFrame === 'function') {
+      pushFrame = () => {
+        try {
+          track.requestFrame()
+        } catch {
+          // stream already stopped
+        }
+      }
+    } else {
+      // No requestFrame: fall back to timed capture so the track still moves.
+      for (const t of stream.getTracks()) t.stop()
+      stream = canvas.captureStream(30)
+    }
+  } catch {
+    stream = null
+  }
 
   let worker = null
   let workerReady = false
@@ -83,6 +123,7 @@ export function createBooth({ video, canvas }) {
           if (message.bitmap) {
             ctx.drawImage(message.bitmap, 0, 0)
             message.bitmap.close()
+            pushFrame()
           }
         } else if (message.type === 'snapshot') {
           const waiter = snapWaiters.get(message.id)
@@ -110,7 +151,7 @@ export function createBooth({ video, canvas }) {
     if (worker && workerReady && !workerFailed) {
       if (pending) return
       pending = true
-      createImageBitmap(video).then(
+      grabLiveFrame(video).then(
         (bitmap) => {
           if (disposed || !worker) {
             bitmap.close()
@@ -133,12 +174,13 @@ export function createBooth({ video, canvas }) {
 
     // Main-thread fallback (worker unavailable or crashed).
     drawScene(ctx, video, video.videoWidth, video.videoHeight, canvas.width, canvas.height, settings)
+    pushFrame()
   }
 
-  /** Small JPEG for the partner pane: downscaled from the rendered frame. */
+  /** Small JPEG for the fallback frame stream: downscaled from the rendered frame. */
   function previewBlob() {
     previewCtx.drawImage(canvas, 0, 0, PREVIEW_W, PREVIEW_H)
-    return jpegBlob(previewCanvas, 0.55)
+    return jpegBlob(previewCanvas, 0.65)
   }
 
   /** The photo itself: full-size filtered capture. */
@@ -186,6 +228,10 @@ export function createBooth({ video, canvas }) {
   function dispose() {
     disposed = true
     failWorker()
+    if (stream) {
+      for (const track of stream.getTracks()) track.stop()
+      stream = null
+    }
   }
 
   return {
@@ -194,6 +240,9 @@ export function createBooth({ video, canvas }) {
     previewBlob,
     snapshotBlob,
     dispose,
+    get stream() {
+      return stream
+    },
     get usingWorker() {
       return Boolean(worker && workerReady && !workerFailed)
     },

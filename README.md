@@ -6,10 +6,25 @@ then make a collage from everything you shot.
 
 No account. No app. Nothing stored anywhere.
 
-> **Status: v0.3.1.** Live two-way video, worker-side filtering, synced shutter, shared
-> strip, collage export. 22 unit tests and a 14-check end-to-end smoke run.
+> **Status: v0.4.0.** Meet-grade live video, worker-side filtering, synced shutter, shared
+> strip, collage export with photo picking. 26 unit tests and a 14-check end-to-end smoke run.
 
 ## Changelog
+
+**v0.4.0, the live one:**
+- The viewfinder is now a real WebRTC video track, the way Meet does it: frames are grabbed
+  already scaled to 480x270 (one cheap GPU resize), rendered in the worker, and pushed into
+  the track the moment they land (manual captureStream + requestFrame). The encoder is
+  tuned motion-first at a steady 30 fps, capped at 900 kbps, so it moves like a video call.
+- TURN fallback (free OpenRelay, UDP and TCP-443) added alongside STUN, so the video call
+  connects through symmetric NATs and networks where UDP never flows. Swap in your own TURN
+  credentials for production.
+- When video still cannot connect, the frame fallback streams at 10 fps instead of one
+  frame every 350 ms, so even the slow path feels live.
+- Tap any photo in the strip to include or drop it from the collage. The button always
+  shows how many are picked.
+- Collage shapes adapt to the pick: 2 photos make a portrait pair, 3 make a tall hero
+  beside two stacked cards, 4 make a 2x2 quad.
 
 **v0.3.1, refinement:**
 - All pixel work moved into a Web Worker (OffscreenCanvas), so filtering no longer blocks
@@ -73,7 +88,7 @@ load the page but the camera will be refused. Use a tunnel (`ngrok http 8765`,
 `cloudflared tunnel --url http://localhost:8765`) or deploy (below), both give HTTPS.
 
 ```bash
-npm test                                       # 22 unit tests
+npm test                                       # 26 unit tests
 node scripts/smoke.mjs http://localhost:8765   # 14-check end-to-end relay smoke
 ```
 
@@ -115,7 +130,7 @@ web/js/filters.js     the verbatim VYNT filter port (see LICENSE)
 web/js/codec.js       wire format: JSON control + binary JPEG frames
 web/js/net.js         WebSocket wrapper with auto-reconnect
 web/js/collage.js     pure layout + canvas render + PNG export
-tests/                22 unit tests
+tests/                26 unit tests
 scripts/smoke.mjs     end-to-end relay smoke
 ```
 

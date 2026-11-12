@@ -46,3 +46,42 @@ test('footer always sits below the last row', () => {
     assert.ok(l.height - l.footer >= lastRowBottom, `footer clear at count ${n}`)
   }
 })
+
+test('two photos form a portrait pair side by side', () => {
+  const l = layoutCollage(2)
+  assert.equal(l.tiles.length, 2)
+  const [a, b] = l.tiles
+  assert.equal(a.y, b.y, 'same row')
+  assert.ok(a.x + a.w < b.x, 'left then right')
+  for (const t of l.tiles) assert.ok(t.h > t.w, 'portrait tiles')
+})
+
+test('three photos stack two cards beside a tall hero', () => {
+  const l = layoutCollage(3)
+  assert.equal(l.tiles.length, 3)
+  const [hero, top, bottom] = l.tiles
+  assert.ok(hero.h > top.h, 'hero taller than a card')
+  assert.ok(hero.h > bottom.h, 'hero taller than a card')
+  assert.equal(top.x, bottom.x, 'cards share a column')
+  assert.ok(top.y + top.h < bottom.y, 'cards stack')
+  assert.ok(hero.x + hero.w < top.x, 'hero left of cards')
+})
+
+test('four photos make a 2x2 quad of equal tiles', () => {
+  const l = layoutCollage(4)
+  assert.equal(l.tiles.length, 4)
+  const xs = [...new Set(l.tiles.map((t) => t.x))]
+  const ys = [...new Set(l.tiles.map((t) => t.y))]
+  assert.equal(xs.length, 2, 'two columns')
+  assert.equal(ys.length, 2, 'two rows')
+  const sizes = new Set(l.tiles.map((t) => `${t.w}x${t.h}`))
+  assert.equal(sizes.size, 1, 'all tiles the same size')
+})
+
+test('shape tiles respect the footer margin at 2, 3 and 4 photos', () => {
+  for (const n of [2, 3, 4]) {
+    const l = layoutCollage(n)
+    const lastBottom = Math.max(...l.tiles.map((t) => t.y + t.h))
+    assert.ok(l.height - l.footer >= lastBottom, `footer clear at count ${n}`)
+  }
+})

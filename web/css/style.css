@@ -225,6 +225,7 @@ input[type="range"] { width: 100%; accent-color: var(--amber); }
   font-size: 11px;
   letter-spacing: 0.18em;
 }
+.pick-hint { opacity: 0.6; font-size: 10px; }
 .strip {
   display: flex;
   gap: 8px;
@@ -238,8 +239,10 @@ input[type="range"] { width: 100%; accent-color: var(--amber); }
   height: 80px;
   border: 2px solid var(--line);
   background: #000;
+  cursor: pointer;
 }
-.thumb img { height: 100%; display: block; }
+.thumb img { height: 100%; display: block; transition: opacity 0.15s, filter 0.15s; }
+.thumb.off img { opacity: 0.22; filter: grayscale(1); }
 .thumb.me { border-color: var(--amber); }
 .thumb.them { border-color: var(--blue); }
 .thumb .who {

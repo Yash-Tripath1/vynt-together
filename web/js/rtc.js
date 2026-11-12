@@ -40,7 +40,29 @@ export function createRtc({ iceServers, send, onRemoteStream, onState }) {
 
   async function addLocal(stream) {
     const conn = ensurePc()
-    for (const track of stream.getTracks()) conn.addTrack(track, stream)
+    for (const track of stream.getTracks()) {
+      // The viewfinder is people moving, not slides: prioritize motion and keep the
+      // framerate steady, which is what makes it feel like a video call instead of a
+      // stream of stills. All of this is best-effort (unsupported browsers ignore it).
+      try {
+        track.contentHint = 'motion'
+      } catch {
+        // contentHint not supported
+      }
+      const sender = conn.addTrack(track, stream)
+      try {
+        const params = sender.getParameters()
+        params.degradationPreference = 'maintain-framerate'
+        if (!params.encodings || params.encodings.length === 0) params.encodings = [{}]
+        for (const encoding of params.encodings) {
+          encoding.maxFramerate = 30
+          encoding.maxBitrate = 900_000
+        }
+        sender.setParameters(params)
+      } catch {
+        // setParameters not supported or not yet negotiable
+      }
+    }
   }
 
   async function makeOffer() {

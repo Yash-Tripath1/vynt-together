@@ -8,12 +8,69 @@ const TILE_H = 300
 const GUTTER = 12
 const FOOTER_H = 64
 
-/** Pure geometry: where does photo i of n sit on the canvas? */
+/** Pure geometry: where does photo i of n sit on the canvas?
+ *  2 photos: a portrait pair side by side.
+ *  3 photos: one tall hero beside two stacked cards.
+ *  4 photos: a clean 2x2 quad.
+ *  1 or 5+: an even grid. */
 export function layoutCollage(count, { tileW = TILE_W, tileH = TILE_H, gutter = GUTTER, footer = FOOTER_H } = {}) {
   const n = Math.max(0, Math.floor(count))
   if (n === 0) return { width: 0, height: 0, tiles: [], footer, cols: 0, rows: 0 }
 
-  const cols = n <= 2 ? n : n <= 6 ? 2 : n <= 12 ? 3 : 4
+  if (n === 2) {
+    const w = Math.round(tileW * 0.95)
+    const h = Math.round((w * 4) / 3)
+    return {
+      width: 2 * w + 3 * gutter,
+      height: h + 2 * gutter + footer,
+      tiles: [
+        { x: gutter, y: gutter, w, h },
+        { x: 2 * gutter + w, y: gutter, w, h },
+      ],
+      footer,
+      cols: 2,
+      rows: 1,
+    }
+  }
+
+  if (n === 3) {
+    const smallW = Math.round(tileW * 0.85)
+    const smallH = Math.round(tileH * 0.91)
+    const bigW = Math.round(tileW * 1.1)
+    const bigH = 2 * smallH + gutter
+    return {
+      width: bigW + smallW + 3 * gutter,
+      height: bigH + 2 * gutter + footer,
+      tiles: [
+        { x: gutter, y: gutter, w: bigW, h: bigH },
+        { x: 2 * gutter + bigW, y: gutter, w: smallW, h: smallH },
+        { x: 2 * gutter + bigW, y: 2 * gutter + smallH, w: smallW, h: smallH },
+      ],
+      footer,
+      cols: 2,
+      rows: 2,
+    }
+  }
+
+  if (n === 4) {
+    const w = Math.round(tileW * 0.95)
+    const h = Math.round((w * 3) / 4)
+    return {
+      width: 2 * w + 3 * gutter,
+      height: 2 * h + 3 * gutter + footer,
+      tiles: [
+        { x: gutter, y: gutter, w, h },
+        { x: 2 * gutter + w, y: gutter, w, h },
+        { x: gutter, y: 2 * gutter + h, w, h },
+        { x: 2 * gutter + w, y: 2 * gutter + h, w, h },
+      ],
+      footer,
+      cols: 2,
+      rows: 2,
+    }
+  }
+
+  const cols = n <= 1 ? 1 : n <= 6 ? 2 : n <= 12 ? 3 : 4
   const rows = Math.ceil(n / cols)
 
   const width = cols * tileW + (cols + 1) * gutter
