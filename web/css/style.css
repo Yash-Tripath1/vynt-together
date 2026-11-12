@@ -16,9 +16,9 @@
 
 * { box-sizing: border-box; }
 
-/* The overlays (.countdown, .modal, .error-card, .pane-wait) use display:flex, which
-   silently beats the browser's default [hidden]{display:none} rule and left the
-   countdown overlay sitting over the page at load. This restores the contract. */
+/* The overlays (.modal, .error-card, .pane-wait) use display:flex, which silently
+   beats the browser's default [hidden]{display:none} rule and left overlays sitting
+   over the page at load. This restores the contract. */
 [hidden] { display: none !important; }
 
 html, body {
@@ -256,26 +256,19 @@ input[type="range"] { width: 100%; accent-color: var(--amber); }
   padding: 1px 4px;
 }
 
-/* ---- countdown ---- */
-.countdown {
+/* ---- shutter flash ---- */
+.flash {
   position: fixed;
   inset: 0;
-  background: rgba(10, 8, 5, 0.88);
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  background: #fff;
+  opacity: 0;
+  pointer-events: none;
   z-index: 60;
 }
-.countdown span {
-  font-size: clamp(120px, 30vw, 280px);
-  font-weight: 700;
-  color: var(--amber);
-  text-shadow: 0 0 40px rgba(255, 180, 84, 0.5);
-  animation: pop 1s infinite;
-}
-@keyframes pop {
-  0% { transform: scale(1.15); opacity: 0.4; }
-  30% { transform: scale(1); opacity: 1; }
+.flash.go { animation: flash 0.32s ease-out; }
+@keyframes flash {
+  0% { opacity: 0.85; }
+  100% { opacity: 0; }
 }
 
 /* ---- modal ---- */

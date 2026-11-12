@@ -70,8 +70,8 @@ const gotBin = await until(() => B.inbox.find((m) => m.binary), 'B got binary')
 check(gotBin && new Uint8Array(gotBin.binary).join(',') === frame.join(','), 'binary forwarded verbatim')
 
 // control messages carry the server-assigned sender id
-A.ws.send(JSON.stringify({ type: 'countdown', ms: 3000 }))
-const cd = await until(() => B.inbox.find((m) => m.type === 'countdown'), 'B got countdown')
+A.ws.send(JSON.stringify({ type: 'snap' }))
+const cd = await until(() => B.inbox.find((m) => m.type === 'snap'), 'B got snap')
 check(cd && cd.from === welcomeA.id, 'control message tagged with sender id')
 
 // rtc signalling rides the same channel and must never be swallowed by the relay

@@ -6,10 +6,23 @@ then make a collage from everything you shot.
 
 No account. No app. Nothing stored anywhere.
 
-> **Status: v0.4.0.** Meet-grade live video, worker-side filtering, synced shutter, shared
-> strip, collage export with photo picking. 26 unit tests and a 14-check end-to-end smoke run.
+> **Status: v0.4.1.** Meet-grade live video, worker-side filtering, instant synced shutter,
+> shared strip, collage export with photo picking. 26 unit tests and a 14-check end-to-end
+> smoke run.
 
 ## Changelog
+
+**v0.4.1, no more waiting:**
+- The 3-2-1 countdown is gone. CLICK TOGETHER fires both shutters at once with a shutter
+  flash instead of a wait. Both sides pressing at the same moment makes one photo pair,
+  not two.
+- A dead video connection now drops and rebuilds itself (two automatic retries) instead
+  of staying dead for the session.
+- If one side's camera is off, frames keep flowing so the other pane no longer freezes
+  at "waiting" on a healthy connection. The pill reads VIDEO only when video frames
+  actually arrive.
+- The relay connection now starts while the camera warms up. Shutter presses with no
+  camera report it instead of failing silently.
 
 **v0.4.0, the live one:**
 - The viewfinder is now a real WebRTC video track, the way Meet does it: frames are grabbed

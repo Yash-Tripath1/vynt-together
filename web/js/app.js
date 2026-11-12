@@ -3,7 +3,7 @@
 // One page, hash-routed rooms (#/r/CODE). Each side sends its filtered viewfinder as a
 // real WebRTC video track (Meet-style: hardware encoded, peer to peer), with a fast
 // frame stream over the relay when video cannot connect. Full-res filtered stills land
-// on the shutter. A "click together" countdown fires both shutters within one beat.
+// on the shutter. A "click together" press fires both shutters at once.
 
 import { KIND, makeRoomCode, encodeFrame } from './codec.js'
 import { createNet } from './net.js'
@@ -46,8 +46,7 @@ const els = {
   clearBtn: $('#clearBtn'),
   strip: $('#strip'),
   stripCount: $('#stripCount'),
-  countdown: $('#countdown'),
-  countNum: $('#countNum'),
+  flash: $('#flash'),
   collageModal: $('#collageModal'),
   collageCanvas: $('#collageCanvas'),
   downloadBtn: $('#downloadBtn'),
@@ -67,7 +66,10 @@ const state = {
   rtcMode: 'idle', // idle | connecting | live | frames
   photos: [], // { who:'me'|'them', blob, url, ts, selected }
   previewBusy: false,
-  counting: false,
+  myVideoOut: false, // a live camera track is actually being sent
+  rtcRetries: 0,
+  remoteShown: false, // first remote video frame has landed in the pane
+  lastSnapAt: 0, // suppresses the duplicate when both sides press at once
 }
 
 const remoteVideo = document.createElement('video')
@@ -96,7 +98,10 @@ function setStatus(kind, text) {
 }
 
 function updatePartnerUI() {
-  const link = state.rtcMode === 'live' ? 'VIDEO' : state.rtcMode === 'frames' ? 'FRAMES' : 'CONNECTED'
+  // VIDEO only when remote video frames actually land in the pane. A connection with no
+  // flowing video (their camera is off) should read FRAMES, not lie.
+  const videoLive = state.rtcMode === 'live' && remoteVideo.videoWidth > 0
+  const link = videoLive ? 'VIDEO' : state.rtcMode === 'frames' ? 'FRAMES' : 'CONNECTED'
   els.partnerPill.textContent = state.partner ? link : 'WAITING'
   els.partnerPill.classList.toggle('on', state.partner)
   if (state.partner) setStatus('live', 'LIVE 2/2')
@@ -112,6 +117,23 @@ function teardownRtc() {
   remoteVideo.srcObject = null
   state.rtcMode = 'idle'
   state.partnerId = null
+  state.rtcRetries = 0
+  state.remoteShown = false
+}
+
+/** A dead connection must be dropped, not reused: the next attempt builds a fresh one
+ *  instead of offering into a corpse. Two automatic retries, then frames mode stays. */
+function failRtc() {
+  state.rtcMode = 'frames'
+  if (rtc) {
+    rtc.close()
+    rtc = null
+  }
+  updatePartnerUI()
+  if (state.inSession && state.partner && state.rtcRetries < 2) {
+    state.rtcRetries += 1
+    setTimeout(() => maybeStartRtc(), 2000)
+  }
 }
 
 // ---- routing ----------------------------------------------------------------
@@ -136,8 +158,6 @@ function showLanding() {
   state.room = null
   state.partner = false
   state.inSession = false
-  state.counting = false
-  els.countdown.hidden = true
   els.session.hidden = true
   els.landing.hidden = false
   setStatus('', 'standby')
@@ -153,8 +173,10 @@ async function enterSession(room) {
 
   if (firstTime) {
     clearPhotos(false) // a new session starts with a clean strip
-    await startCamera()
-    ensureNet()
+    const cameraDone = startCamera()
+    ensureNet() // connect to the relay while the camera warms up
+    buildFilterChips()
+    await cameraDone
     buildFilterChips()
   }
   if (net && net.connected) net.send({ type: 'join', room })
@@ -194,6 +216,7 @@ async function startCamera() {
     booth = createBooth({ video, canvas: els.myCam })
     applyControlValues()
     cameraReady = true
+    state.myVideoOut = true
     startRenderLoop()
     startPreviewLoop()
   } catch (error) {
@@ -215,6 +238,7 @@ function stopCamera() {
     cameraStream = null
   }
   cameraReady = false
+  state.myVideoOut = false
 }
 
 function startRenderLoop() {
@@ -230,6 +254,10 @@ function startRenderLoop() {
         const ctx = els.theirCam.getContext('2d')
         ctx.drawImage(remoteVideo, 0, 0, els.theirCam.width, els.theirCam.height)
         els.theirWait.hidden = true
+        if (!state.remoteShown) {
+          state.remoteShown = true
+          updatePartnerUI()
+        }
       }
     }
     requestAnimationFrame(tick)
@@ -241,10 +269,10 @@ function startPreviewLoop() {
   if (previewTimer) clearInterval(previewTimer)
   previewTimer = setInterval(async () => {
     if (!state.inSession || !cameraReady || !booth || !state.partner || !net || !net.connected) return
-    // With live video flowing and the tab visible, frames are redundant. When video
-    // cannot connect, or the tab is hidden (rAF/canvas freeze), frames carry the pane
-    // at a video-like rate (the browser throttles this to ~1/s in the background).
-    if (state.rtcMode === 'live' && !document.hidden) return
+    // Frames are only skipped when OUR video is actually flowing to them and the tab is
+    // visible. If our camera is off or never attached, frames must keep going or their
+    // pane freezes at "waiting" even though the connection is fine.
+    if (state.myVideoOut && state.rtcMode === 'live' && !document.hidden) return
     if (state.previewBusy) return
     state.previewBusy = true
     try {
@@ -346,10 +374,12 @@ function ensureNet() {
             teardownRtc()
             updatePartnerUI()
             break
-          case 'countdown':
-            // broadcast:false is load-bearing -- a received countdown must never be
-            // re-broadcast, or the two clients ping-pong it forever.
-            runCountdown(msg.ms || 3000, { broadcast: false })
+          case 'snap':
+            // A received snap must never be re-broadcast, or the two clients ping-pong
+            // it forever. It fires this side's shutter, unless we just fired our own
+            // (both sides pressing "together" at once must make one photo, not two).
+            if (Date.now() - state.lastSnapAt < 700) break
+            captureAndSend()
             break
           case 'clear':
             clearPhotos(false)
@@ -393,9 +423,12 @@ function ensureRtc() {
     onState: (connectionState) => {
       if (connectionState === 'connected') {
         state.rtcMode = 'live'
+        state.rtcRetries = 0
       } else if (connectionState === 'failed' || connectionState === 'closed') {
-        // Fall back to preview frames rather than showing a frozen pane.
-        state.rtcMode = 'frames'
+        // Fall back to preview frames rather than showing a frozen pane, and schedule
+        // a fresh connection attempt (see failRtc).
+        failRtc()
+        return
       }
       updatePartnerUI()
     },
@@ -419,10 +452,7 @@ function maybeStartRtc() {
       // Deterministic: exactly one side offers (see rtc.js).
       if (shouldOffer(state.myId, state.partnerId)) return conn.makeOffer()
     })
-    .catch(() => {
-      state.rtcMode = 'frames'
-      updatePartnerUI()
-    })
+    .catch(() => failRtc())
 }
 
 async function drawTheirPreview(payload) {
@@ -440,8 +470,16 @@ async function drawTheirPreview(payload) {
 
 // ---- shutter -----------------------------------------------------------------
 
+function flash() {
+  els.flash.classList.remove('go')
+  void els.flash.offsetWidth // restart the animation
+  els.flash.classList.add('go')
+}
+
 async function captureAndSend() {
   if (!cameraReady || !booth || !net) return
+  state.lastSnapAt = Date.now()
+  flash()
   try {
     const blob = await booth.snapshotBlob()
     addPhoto('me', blob)
@@ -454,29 +492,21 @@ async function captureAndSend() {
   }
 }
 
-function runCountdown(ms, { broadcast = true } = {}) {
-  if (state.counting) return
-  state.counting = true
-  if (broadcast && net) net.send({ type: 'countdown', ms })
-
-  els.countdown.hidden = false
-  const t0 = performance.now()
-  const tick = () => {
-    const left = ms - (performance.now() - t0)
-    if (left <= 0) {
-      els.countdown.hidden = true
-      state.counting = false
-      captureAndSend()
-      return
-    }
-    els.countNum.textContent = String(Math.max(1, Math.ceil(left / 1000)))
-    requestAnimationFrame(tick)
+els.togetherBtn.addEventListener('click', () => {
+  if (!cameraReady || !booth || !net) {
+    showError('No camera.')
+    return
   }
-  tick()
-}
-
-els.togetherBtn.addEventListener('click', () => runCountdown(3000))
-els.soloBtn.addEventListener('click', () => captureAndSend())
+  net.send({ type: 'snap' })
+  captureAndSend()
+})
+els.soloBtn.addEventListener('click', () => {
+  if (!cameraReady || !booth || !net) {
+    showError('No camera.')
+    return
+  }
+  captureAndSend()
+})
 
 // ---- photo strip ---------------------------------------------------------------
 

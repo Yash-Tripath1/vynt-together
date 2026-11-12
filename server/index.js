@@ -187,7 +187,7 @@ wss.on('connection', (ws) => {
       return
     }
 
-    // Everything else (countdown, clear, ...) is forwarded to the room verbatim,
+    // Everything else (snap, clear, ...) is forwarded to the room verbatim,
     // tagged with the sender's server-assigned id.
     const peers = rooms.roommates(ws)
     if (peers.length === 0) return
