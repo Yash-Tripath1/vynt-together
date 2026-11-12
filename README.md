@@ -6,11 +6,24 @@ then make a collage from everything you shot.
 
 No account. No app. Nothing stored anywhere.
 
-> **Status: v0.4.1.** Meet-grade live video, worker-side filtering, instant synced shutter,
-> shared strip, collage export with photo picking. 26 unit tests and a 14-check end-to-end
-> smoke run.
+> **Status: v0.5.0.** Meet-grade live video (raw camera track, never stale), worker-side
+> filtering, one-click shared photos on both screens, collage export with photo picking.
+> 26 unit tests and a 14-check end-to-end smoke run.
 
 ## Changelog
+
+**v0.5.0, the Meet one:**
+- The live feed is now the raw camera track sent straight over WebRTC, the way Meet does
+  it. The media pipeline keeps it alive even when the sending tab is hidden, so the
+  partner's pane is genuinely live in a two-tab test instead of freezing at the last
+  frame. Filters moved to display time and run in the worker for both panes.
+- One click on CLICK TOGETHER makes one shared photo: both cameras fire under one photo
+  id, both halves commit to the strip together, and both screens show the same photo
+  card at the same moment. Pressing at the same time is the same moment and makes one
+  photo, not two.
+- Booth settings (filter, grain, pixel, stamp, mirror) are shared: change anything and
+  both screens follow, so the strip and collage always match.
+- The 3-2-1 countdown is gone (since 0.4.1): instant shutter with a flash.
 
 **v0.4.1, no more waiting:**
 - The 3-2-1 countdown is gone. CLICK TOGETHER fires both shutters at once with a shutter

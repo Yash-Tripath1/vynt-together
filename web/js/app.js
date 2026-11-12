@@ -1,15 +1,18 @@
 // VYNT Together -- session orchestration.
 //
-// One page, hash-routed rooms (#/r/CODE). Each side sends its filtered viewfinder as a
-// real WebRTC video track (Meet-style: hardware encoded, peer to peer), with a fast
-// frame stream over the relay when video cannot connect. Full-res filtered stills land
-// on the shutter. A "click together" press fires both shutters at once.
+// One page, hash-routed rooms (#/r/CODE). Each side sends its raw camera track over
+// WebRTC (Meet-style: hardware encoded, peer to peer, alive even in hidden tabs) and
+// both panes are filtered at display time, so the feed never goes stale. One click on
+// CLICK TOGETHER fires both cameras under one shared photo id: both screens commit and
+// show the pair at the same moment. A fast frame stream over the relay covers the case
+// where video cannot connect at all.
 
 import { KIND, makeRoomCode, encodeFrame } from './codec.js'
 import { createNet } from './net.js'
 import { createRtc, shouldOffer } from './rtc.js'
-import { createBooth, FILTERS } from './capture.js'
+import { createFeed, FILTERS } from './capture.js'
 import { renderCollage, downloadCanvas } from './collage.js'
+import { computeCoverCrop } from './layout.js'
 
 // Public STUN first, then the free OpenRelay TURN (UDP + TCP-443) so the video call
 // still connects through symmetric NATs and networks where UDP never flows. For
@@ -47,6 +50,8 @@ const els = {
   strip: $('#strip'),
   stripCount: $('#stripCount'),
   flash: $('#flash'),
+  photoCard: $('#photoCard'),
+  photoCardCanvas: $('#photoCardCanvas'),
   collageModal: $('#collageModal'),
   collageCanvas: $('#collageCanvas'),
   downloadBtn: $('#downloadBtn'),
@@ -55,6 +60,16 @@ const els = {
   errorMsg: $('#errorMsg'),
   errorClose: $('#errorClose'),
   startBtn: $('#startBtn'),
+}
+
+// One booth, one look: both feeds render with this shared settings object, and both
+// screens keep it in sync over the relay.
+const settings = {
+  filterMode: 'vyntage',
+  grain: 34,
+  pixelSize: 3,
+  stamp: true,
+  mirror: true,
 }
 
 const state = {
@@ -66,7 +81,6 @@ const state = {
   rtcMode: 'idle', // idle | connecting | live | frames
   photos: [], // { who:'me'|'them', blob, url, ts, selected }
   previewBusy: false,
-  myVideoOut: false, // a live camera track is actually being sent
   rtcRetries: 0,
   remoteShown: false, // first remote video frame has landed in the pane
   lastSnapAt: 0, // suppresses the duplicate when both sides press at once
@@ -77,13 +91,20 @@ remoteVideo.muted = true
 remoteVideo.playsInline = true
 remoteVideo.autoplay = true
 
-let booth = null
+const camVideo = document.createElement('video')
+camVideo.muted = true
+camVideo.playsInline = true
+
+let myFeed = null
+let theirFeed = null
 let net = null
 let rtc = null
 let cameraStream = null
 let cameraReady = false
 let renderStarted = false
 let previewTimer = null
+let cardTimer = null
+const pairs = new Map() // snapId -> { me, them, timer, done }
 
 // ---- helpers ----------------------------------------------------------------
 
@@ -173,6 +194,7 @@ async function enterSession(room) {
 
   if (firstTime) {
     clearPhotos(false) // a new session starts with a clean strip
+    if (!theirFeed) theirFeed = createFeed({ video: remoteVideo, canvas: els.theirCam, settings })
     const cameraDone = startCamera()
     ensureNet() // connect to the relay while the camera warms up
     buildFilterChips()
@@ -183,7 +205,7 @@ async function enterSession(room) {
   updatePartnerUI()
 }
 
-// ---- camera + booth ----------------------------------------------------------
+// ---- camera + feeds ----------------------------------------------------------
 
 async function startCamera() {
   if (cameraReady) return
@@ -192,17 +214,14 @@ async function startCamera() {
       video: { width: { ideal: 1280 }, height: { ideal: 720 } },
       audio: false,
     })
-    const video = document.createElement('video')
-    video.muted = true
-    video.playsInline = true
-    video.srcObject = cameraStream
-    await video.play()
+    camVideo.srcObject = cameraStream
+    await camVideo.play()
 
     // Wait for real frames before rendering, so the pane never starts half-alive.
-    for (let i = 0; i < 100 && !video.videoWidth; i += 1) {
+    for (let i = 0; i < 100 && !camVideo.videoWidth; i += 1) {
       await new Promise((resolve) => setTimeout(resolve, 20))
     }
-    if (!video.videoWidth) throw new Error('camera produced no frames')
+    if (!camVideo.videoWidth) throw new Error('camera produced no frames')
 
     const [track] = cameraStream.getVideoTracks()
     if (track) {
@@ -213,10 +232,8 @@ async function startCamera() {
       })
     }
 
-    booth = createBooth({ video, canvas: els.myCam })
-    applyControlValues()
+    myFeed = createFeed({ video: camVideo, canvas: els.myCam, settings })
     cameraReady = true
-    state.myVideoOut = true
     startRenderLoop()
     startPreviewLoop()
   } catch (error) {
@@ -229,16 +246,15 @@ function stopCamera() {
     clearInterval(previewTimer)
     previewTimer = null
   }
-  if (booth) {
-    booth.dispose()
-    booth = null
+  if (myFeed) {
+    myFeed.dispose()
+    myFeed = null
   }
   if (cameraStream) {
     cameraStream.getTracks().forEach((track) => track.stop())
     cameraStream = null
   }
   cameraReady = false
-  state.myVideoOut = false
 }
 
 function startRenderLoop() {
@@ -248,11 +264,9 @@ function startRenderLoop() {
   const tick = (now) => {
     if (state.inSession && now - last > 33) {
       last = now
-      if (cameraReady && booth) booth.frame()
-      // Live partner viewfinder: copy their WebRTC video into the pane each tick.
-      if (state.rtcMode === 'live' && remoteVideo.videoWidth) {
-        const ctx = els.theirCam.getContext('2d')
-        ctx.drawImage(remoteVideo, 0, 0, els.theirCam.width, els.theirCam.height)
+      if (cameraReady && myFeed) myFeed.frame()
+      if (theirFeed) theirFeed.frame()
+      if (remoteVideo.videoWidth > 0) {
         els.theirWait.hidden = true
         if (!state.remoteShown) {
           state.remoteShown = true
@@ -268,15 +282,15 @@ function startRenderLoop() {
 function startPreviewLoop() {
   if (previewTimer) clearInterval(previewTimer)
   previewTimer = setInterval(async () => {
-    if (!state.inSession || !cameraReady || !booth || !state.partner || !net || !net.connected) return
-    // Frames are only skipped when OUR video is actually flowing to them and the tab is
-    // visible. If our camera is off or never attached, frames must keep going or their
-    // pane freezes at "waiting" even though the connection is fine.
-    if (state.myVideoOut && state.rtcMode === 'live' && !document.hidden) return
+    if (!state.inSession || !cameraReady || !myFeed || !state.partner || !net || !net.connected) return
+    // The raw video track is the live path and survives hidden tabs by itself. These
+    // frames only exist for when video cannot connect at all (the browser throttles
+    // this to ~1/s in the background, which still beats a frozen pane).
+    if (state.rtcMode === 'live') return
     if (state.previewBusy) return
     state.previewBusy = true
     try {
-      const blob = await booth.previewBlob()
+      const blob = await myFeed.previewBlob()
       const bytes = new Uint8Array(await blob.arrayBuffer())
       net.sendBinary(encodeFrame(KIND.PREVIEW, { id: state.myId }, bytes))
     } finally {
@@ -285,7 +299,7 @@ function startPreviewLoop() {
   }, 100)
 }
 
-// ---- controls ----------------------------------------------------------------
+// ---- controls (shared booth settings) ----------------------------------------
 
 function buildFilterChips() {
   els.filterChips.textContent = ''
@@ -295,27 +309,42 @@ function buildFilterChips() {
     button.className = 'chip'
     button.textContent = filter.label
     button.addEventListener('click', () => {
-      if (booth) booth.settings.filterMode = filter.id
+      settings.filterMode = filter.id
       buildFilterChips()
+      broadcastSettings()
     })
-    if (booth && booth.settings.filterMode === filter.id) button.classList.add('is-active')
+    if (settings.filterMode === filter.id) button.classList.add('is-active')
     els.filterChips.appendChild(button)
   }
 }
 
-function applyControlValues() {
-  if (!booth) return
-  booth.settings.grain = Number(els.grain.value)
-  booth.settings.pixelSize = Number(els.pixel.value)
-  booth.settings.stamp = els.stamp.checked
-  booth.settings.mirror = els.mirror.checked
+function applyControlValues(broadcast = true) {
+  settings.grain = Number(els.grain.value)
+  settings.pixelSize = Number(els.pixel.value)
+  settings.stamp = els.stamp.checked
+  settings.mirror = els.mirror.checked
   els.grainOut.textContent = els.grain.value
   els.pixelOut.textContent = els.pixel.value
+  if (broadcast) broadcastSettings()
+}
+
+function syncControls() {
+  els.grain.value = settings.grain
+  els.pixel.value = settings.pixelSize
+  els.stamp.checked = settings.stamp
+  els.mirror.checked = settings.mirror
+  els.grainOut.textContent = settings.grain
+  els.pixelOut.textContent = settings.pixelSize
+  buildFilterChips()
+}
+
+function broadcastSettings() {
+  if (net && state.partner) net.send({ type: 'settings', settings: { ...settings } })
 }
 
 for (const el of [els.grain, els.pixel, els.stamp, els.mirror]) {
-  el.addEventListener('input', applyControlValues)
-  el.addEventListener('change', applyControlValues)
+  el.addEventListener('input', () => applyControlValues())
+  el.addEventListener('change', () => applyControlValues())
 }
 
 // ---- network -----------------------------------------------------------------
@@ -355,6 +384,7 @@ function ensureNet() {
             updatePartnerUI()
             if (state.partner) {
               sendRtcHello()
+              broadcastSettings()
               maybeStartRtc()
             }
             break
@@ -367,6 +397,7 @@ function ensureNet() {
             state.partner = true
             updatePartnerUI()
             sendRtcHello()
+            broadcastSettings()
             maybeStartRtc()
             break
           case 'peer-left':
@@ -376,10 +407,17 @@ function ensureNet() {
             break
           case 'snap':
             // A received snap must never be re-broadcast, or the two clients ping-pong
-            // it forever. It fires this side's shutter, unless we just fired our own
-            // (both sides pressing "together" at once must make one photo, not two).
+            // it forever. It fires this side's shutter under the SAME photo id, so one
+            // click makes one shared photo. Both sides pressing at once (within 700 ms)
+            // is the same moment and makes one photo, not two.
             if (Date.now() - state.lastSnapAt < 700) break
-            captureAndSend()
+            captureAndSend(msg.snapId || `snap-${Date.now()}`, false)
+            break
+          case 'settings':
+            if (msg.settings) {
+              Object.assign(settings, msg.settings)
+              syncControls()
+            }
             break
           case 'clear':
             clearPhotos(false)
@@ -400,7 +438,8 @@ function ensureNet() {
         if (frame.kind === KIND.PREVIEW) {
           drawTheirPreview(frame.payload)
         } else if (frame.kind === KIND.SHUTTER) {
-          addPhoto('them', new Blob([frame.payload], { type: 'image/jpeg' }))
+          const meta = frame.meta || {}
+          addShutterPhoto('them', new Blob([frame.payload], { type: 'image/jpeg' }), meta.snapId, meta.solo)
         }
       },
     },
@@ -447,7 +486,11 @@ function maybeStartRtc() {
   state.rtcMode = 'connecting'
   const conn = ensureRtc()
   Promise.resolve()
-    .then(() => conn.addLocal((booth && booth.stream) || els.myCam.captureStream(30)))
+    .then(() => {
+      // The raw camera track: the media pipeline keeps it alive even when this tab is
+      // hidden, which is what makes the partner's pane genuinely live.
+      if (cameraStream) return conn.addLocal(cameraStream)
+    })
     .then(() => {
       // Deterministic: exactly one side offers (see rtc.js).
       if (shouldOffer(state.myId, state.partnerId)) return conn.makeOffer()
@@ -468,7 +511,7 @@ async function drawTheirPreview(payload) {
   els.theirWait.hidden = true
 }
 
-// ---- shutter -----------------------------------------------------------------
+// ---- shutter + shared photo events ---------------------------------------------
 
 function flash() {
   els.flash.classList.remove('go')
@@ -476,36 +519,106 @@ function flash() {
   els.flash.classList.add('go')
 }
 
-async function captureAndSend() {
-  if (!cameraReady || !booth || !net) return
+async function captureAndSend(snapId, solo) {
+  if (!cameraReady || !myFeed || !net) return
   state.lastSnapAt = Date.now()
   flash()
   try {
-    const blob = await booth.snapshotBlob()
-    addPhoto('me', blob)
+    const blob = await myFeed.snapshotBlob()
+    addShutterPhoto('me', blob, snapId, solo)
     const bytes = new Uint8Array(await blob.arrayBuffer())
     net.sendBinary(
-      encodeFrame(KIND.SHUTTER, { id: state.myId, filter: booth.settings.filterMode, ts: Date.now() }, bytes)
+      encodeFrame(KIND.SHUTTER, { id: state.myId, snapId, solo: Boolean(solo), ts: Date.now() }, bytes)
     )
   } catch (error) {
     showError('Could not take the photo.')
   }
 }
 
+/** Photos land here with a shared event id. Both halves commit together, so both
+ *  screens show the same pair at the same moment. A solo photo is its own event. */
+function addShutterPhoto(who, blob, snapId, solo) {
+  if (!snapId || solo) {
+    addPhoto(who, blob)
+    showPhotoCard(who === 'me' ? blob : null, who === 'them' ? blob : null)
+    return
+  }
+  let entry = pairs.get(snapId)
+  if (!entry) {
+    entry = { me: null, them: null, done: false, timer: 0 }
+    entry.timer = setTimeout(() => commitPair(snapId), 2500)
+    pairs.set(snapId, entry)
+  }
+  entry[who] = entry[who] || blob
+  if (entry.me && entry.them) commitPair(snapId)
+}
+
+function commitPair(snapId) {
+  const entry = pairs.get(snapId)
+  if (!entry || entry.done) return
+  entry.done = true
+  clearTimeout(entry.timer)
+  pairs.delete(snapId)
+  if (entry.me) addPhoto('me', entry.me)
+  if (entry.them) addPhoto('them', entry.them)
+  showPhotoCard(entry.me, entry.them)
+}
+
+function showPhotoCard(meBlob, themBlob) {
+  clearTimeout(cardTimer)
+  drawPhotoCard(meBlob, themBlob)
+  els.photoCard.hidden = false
+  cardTimer = setTimeout(() => {
+    els.photoCard.hidden = true
+  }, 3200)
+}
+
+async function drawPhotoCard(meBlob, themBlob) {
+  const canvas = els.photoCardCanvas
+  const tiles = meBlob && themBlob ? 2 : 1
+  canvas.width = tiles === 2 ? 720 : 360
+  canvas.height = 480
+  const ctx = canvas.getContext('2d')
+  ctx.fillStyle = '#12100c'
+  ctx.fillRect(0, 0, canvas.width, canvas.height)
+
+  const halves = tiles === 2 ? [meBlob, themBlob] : [meBlob || themBlob]
+  for (let i = 0; i < halves.length; i += 1) {
+    if (!halves[i]) continue
+    let bitmap
+    try {
+      bitmap = await createImageBitmap(halves[i])
+    } catch {
+      continue
+    }
+    const x = i * (canvas.width / halves.length)
+    const w = canvas.width / halves.length
+    const rect = computeCoverCrop(bitmap.width, bitmap.height, w, canvas.height, 1)
+    ctx.drawImage(bitmap, rect.sx, rect.sy, rect.sw, rect.sh, x, 0, w, canvas.height)
+    bitmap.close()
+  }
+}
+
+els.photoCard.addEventListener('click', () => {
+  els.photoCard.hidden = true
+  clearTimeout(cardTimer)
+})
+
 els.togetherBtn.addEventListener('click', () => {
-  if (!cameraReady || !booth || !net) {
+  if (!cameraReady || !myFeed || !net) {
     showError('No camera.')
     return
   }
-  net.send({ type: 'snap' })
-  captureAndSend()
+  const snapId = `${state.myId || 'me'}-${Date.now()}`
+  net.send({ type: 'snap', snapId })
+  captureAndSend(snapId, false)
 })
 els.soloBtn.addEventListener('click', () => {
-  if (!cameraReady || !booth || !net) {
+  if (!cameraReady || !myFeed || !net) {
     showError('No camera.')
     return
   }
-  captureAndSend()
+  captureAndSend(`solo-${Date.now()}`, true)
 })
 
 // ---- photo strip ---------------------------------------------------------------
@@ -544,6 +657,8 @@ function updateCollageBtn() {
 function clearPhotos(announce) {
   for (const photo of state.photos) URL.revokeObjectURL(photo.url)
   state.photos = []
+  for (const [, entry] of pairs) clearTimeout(entry.timer)
+  pairs.clear()
   els.strip.textContent = ''
   els.stripCount.textContent = '0'
   updateCollageBtn()

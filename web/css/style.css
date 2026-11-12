@@ -271,6 +271,25 @@ input[type="range"] { width: 100%; accent-color: var(--amber); }
   100% { opacity: 0; }
 }
 
+/* ---- shared photo card ---- */
+.photo-card {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(10, 8, 5, 0.72);
+  z-index: 55;
+  cursor: pointer;
+}
+.photo-card canvas {
+  width: min(78vw, 720px);
+  height: auto;
+  border: 3px solid var(--amber);
+  border-radius: 10px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.6);
+}
+
 /* ---- modal ---- */
 .modal {
   position: fixed;

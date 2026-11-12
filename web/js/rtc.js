@@ -56,7 +56,7 @@ export function createRtc({ iceServers, send, onRemoteStream, onState }) {
         if (!params.encodings || params.encodings.length === 0) params.encodings = [{}]
         for (const encoding of params.encodings) {
           encoding.maxFramerate = 30
-          encoding.maxBitrate = 900_000
+          encoding.maxBitrate = 1_500_000
         }
         sender.setParameters(params)
       } catch {
