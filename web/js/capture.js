@@ -1,10 +1,9 @@
-// The feed renderer: raw video in, filtered canvas out.
+// The camera: photos and fallback frames.
 //
-// Live video travels as the raw camera track (see app.js), which the media pipeline
-// keeps alive even in hidden tabs, exactly like a video call. Filtering happens here,
-// at display time, per pane, in a Web Worker so it never blocks the UI. The same
-// renderer draws the local viewfinder and the partner's feed. Preview JPEGs and
-// shutter captures are derived from the same pipeline.
+// Live video is shown as the raw decoded stream (see app.js), so nothing here touches
+// the display anymore. This module exists for the two moments that still need the exact
+// VYNT pixel pipeline: the shutter photo (full size, through the filter worker) and the
+// fallback preview frames for when video cannot connect at all.
 
 import { drawScene } from './render.js'
 
@@ -19,8 +18,6 @@ export const FILTERS = [
   { id: 'goldenfilm', label: 'GOLDEN FILM' },
 ]
 
-const LIVE_W = 480
-const LIVE_H = 270
 const PREVIEW_W = 384
 const PREVIEW_H = 216
 const SNAP_W = 1280
@@ -30,39 +27,19 @@ function jpegBlob(canvas, quality) {
   return new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', quality))
 }
 
-/** Cover-resize the current source frame to roughly LIVE_W x LIVE_H during the grab,
- * so a 720p feed costs the same as a webcam: no full-size copy, no jank. */
-function grabLiveFrame(video) {
-  const scale = Math.max(LIVE_W / video.videoWidth, LIVE_H / video.videoHeight)
-  return createImageBitmap(video, {
-    resizeWidth: Math.max(LIVE_W, Math.round(video.videoWidth * scale)),
-    resizeHeight: Math.max(LIVE_H, Math.round(video.videoHeight * scale)),
-    resizeQuality: 'low',
-  })
-}
-
 /**
  * @param {object} options
- * @param {HTMLVideoElement} options.video source (camera element or remote feed)
- * @param {HTMLCanvasElement} options.canvas where the filtered frames land
+ * @param {HTMLVideoElement} options.video the camera element
  * @param {object} options.settings shared, mutable filter settings
  */
-export function createFeed({ video, canvas, settings }) {
-  canvas.width = LIVE_W
-  canvas.height = LIVE_H
-  const ctx = canvas.getContext('2d')
-
-  // Derived preview surface: reused, so the fallback frame sends cost one blit and one
-  // JPEG encode, never another filter pass.
+export function createFeed({ video, settings }) {
   const previewCanvas = document.createElement('canvas')
   previewCanvas.width = PREVIEW_W
   previewCanvas.height = PREVIEW_H
-  const previewCtx = previewCanvas.getContext('2d')
 
   let worker = null
   let workerReady = false
   let workerFailed = false
-  let pending = false
   let disposed = false
   let nextSnapId = 1
   const snapWaiters = new Map()
@@ -76,7 +53,6 @@ export function createFeed({ video, canvas, settings }) {
       worker = null
     }
     workerReady = false
-    pending = false
     for (const [, waiter] of snapWaiters) waiter(null)
     snapWaiters.clear()
   }
@@ -89,12 +65,6 @@ export function createFeed({ video, canvas, settings }) {
         if (!message) return
         if (message.type === 'ready') {
           workerReady = true
-        } else if (message.type === 'rendered') {
-          pending = false
-          if (message.bitmap) {
-            ctx.drawImage(message.bitmap, 0, 0)
-            message.bitmap.close()
-          }
         } else if (message.type === 'snapshot') {
           const waiter = snapWaiters.get(message.id)
           snapWaiters.delete(message.id)
@@ -114,45 +84,14 @@ export function createFeed({ video, canvas, settings }) {
     return !disposed && video && video.videoWidth > 0 && video.videoHeight > 0
   }
 
-  /** Called from the render loop at ~30 fps. No-ops while the source has no frames. */
-  function frame() {
-    if (!ready()) return
-
-    if (worker && workerReady && !workerFailed) {
-      if (pending) return
-      pending = true
-      grabLiveFrame(video).then(
-        (bitmap) => {
-          if (disposed || !worker) {
-            bitmap.close()
-            pending = false
-            return
-          }
-          try {
-            worker.postMessage({ type: 'frame', bitmap, settings: { ...settings } }, [bitmap])
-          } catch (error) {
-            pending = false
-            failWorker()
-          }
-        },
-        () => {
-          pending = false
-        }
-      )
-      return
-    }
-
-    // Main-thread fallback (worker unavailable or crashed).
-    drawScene(ctx, video, video.videoWidth, video.videoHeight, canvas.width, canvas.height, settings)
-  }
-
-  /** Small JPEG for the fallback frame stream: downscaled from the rendered frame. */
+  /** Small JPEG for the fallback frame stream: rendered on demand at preview size. */
   function previewBlob() {
-    previewCtx.drawImage(canvas, 0, 0, PREVIEW_W, PREVIEW_H)
+    if (!ready()) return Promise.resolve(null)
+    drawScene(previewCanvas.getContext('2d'), video, video.videoWidth, video.videoHeight, PREVIEW_W, PREVIEW_H, settings)
     return jpegBlob(previewCanvas, 0.65)
   }
 
-  /** The photo itself: full-size filtered capture from the live source. */
+  /** The photo itself: full-size, exact VYNT pixels, through the worker when possible. */
   async function snapshotBlob() {
     if (!ready()) throw new Error('camera not ready')
 
@@ -201,7 +140,6 @@ export function createFeed({ video, canvas, settings }) {
 
   return {
     settings,
-    frame,
     previewBlob,
     snapshotBlob,
     dispose,

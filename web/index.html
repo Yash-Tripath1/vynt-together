@@ -36,12 +36,25 @@
       </div>
 
       <div class="stage">
-        <div class="pane">
-          <canvas id="myCam" width="480" height="270"></canvas>
+        <div class="pane" id="myPane" data-mirror="self">
+          <div class="media-wrap">
+            <video id="myVideo" autoplay muted playsinline></video>
+          </div>
+          <div class="fx grain"></div>
+          <div class="fx scan"></div>
+          <div class="fx vig"></div>
+          <div class="stamp" id="myStamp"></div>
           <div class="pane-label me">ME</div>
         </div>
-        <div class="pane">
-          <canvas id="theirCam" width="480" height="270"></canvas>
+        <div class="pane" id="theirPane">
+          <div class="media-wrap">
+            <video id="theirVideo" autoplay muted playsinline></video>
+            <canvas id="theirCam" width="480" height="270"></canvas>
+          </div>
+          <div class="fx grain"></div>
+          <div class="fx scan"></div>
+          <div class="fx vig"></div>
+          <div class="stamp" id="theirStamp"></div>
           <div class="pane-label them">YOU</div>
           <div class="pane-wait" id="theirWait">waiting…</div>
         </div>

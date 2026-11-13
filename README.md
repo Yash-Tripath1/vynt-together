@@ -6,11 +6,25 @@ then make a collage from everything you shot.
 
 No account. No app. Nothing stored anywhere.
 
-> **Status: v0.5.0.** Meet-grade live video (raw camera track, never stale), worker-side
-> filtering, one-click shared photos on both screens, collage export with photo picking.
+> **Status: v0.6.0.** Real decoded video panes (Meet-grade motion), GPU layered VYNT
+> looks, one-click shared photos on both screens, exact VYNT pixels for the photos.
 > 26 unit tests and a 14-check end-to-end smoke run.
 
 ## Changelog
+
+**v0.6.0, real video at last:**
+- The panes are now real decoded `<video>` elements. The browser draws them on the GPU
+  at native framerate, the way Meet and Zoom do, instead of painting frames into a
+  canvas loop (which always reads as a stuttery slideshow no matter how fast it runs).
+- The VYNT look moved to the compositor: a filter chain on the video plus grain,
+  scanline, vignette and date stamp layers on top, tuned per filter from the original
+  pixel math. The PIXEL slider rasterizes the video small and scales it up with nearest
+  neighbour, so it too runs at native framerate.
+- Photos still run through the exact VYNT pixel code (the verbatim port), so what you
+  keep is pixel-identical to the original app. The live look is a close GPU
+  approximation of it.
+- Everything from 0.5.0 stands: raw camera track (alive in hidden tabs), one click
+  makes one shared photo with a photo card on both screens, shared booth settings.
 
 **v0.5.0, the Meet one:**
 - The live feed is now the raw camera track sent straight over WebRTC, the way Meet does

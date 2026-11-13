@@ -1,16 +1,17 @@
 // VYNT Together -- session orchestration.
 //
-// One page, hash-routed rooms (#/r/CODE). Each side sends its raw camera track over
-// WebRTC (Meet-style: hardware encoded, peer to peer, alive even in hidden tabs) and
-// both panes are filtered at display time, so the feed never goes stale. One click on
-// CLICK TOGETHER fires both cameras under one shared photo id: both screens commit and
-// show the pair at the same moment. A fast frame stream over the relay covers the case
-// where video cannot connect at all.
+// One page, hash-routed rooms (#/r/CODE). Live viewfinders are real decoded video
+// elements (Meet-style: native framerate, GPU composited, alive even in hidden tabs,
+// because the raw camera track travels over WebRTC and the browser does the drawing).
+// The VYNT look is GPU work layered on top (see looks.js). One click on CLICK TOGETHER
+// fires both cameras under one shared photo id: both screens commit and show the pair
+// at the same moment. Exact VYNT pixels are kept for the photos themselves.
 
 import { KIND, makeRoomCode, encodeFrame } from './codec.js'
 import { createNet } from './net.js'
 import { createRtc, shouldOffer } from './rtc.js'
 import { createFeed, FILTERS } from './capture.js'
+import { applyLook } from './looks.js'
 import { renderCollage, downloadCanvas } from './collage.js'
 import { computeCoverCrop } from './layout.js'
 
@@ -33,9 +34,14 @@ const els = {
   roomCode: $('#roomCode'),
   copyBtn: $('#copyBtn'),
   partnerPill: $('#partnerPill'),
-  myCam: $('#myCam'),
+  myPane: $('#myPane'),
+  theirPane: $('#theirPane'),
+  myVideo: $('#myVideo'),
+  theirVideo: $('#theirVideo'),
   theirCam: $('#theirCam'),
   theirWait: $('#theirWait'),
+  myStamp: $('#myStamp'),
+  theirStamp: $('#theirStamp'),
   filterChips: $('#filterChips'),
   grain: $('#grain'),
   grainOut: $('#grainOut'),
@@ -62,7 +68,7 @@ const els = {
   startBtn: $('#startBtn'),
 }
 
-// One booth, one look: both feeds render with this shared settings object, and both
+// One booth, one look: both panes render with this shared settings object, and both
 // screens keep it in sync over the relay.
 const settings = {
   filterMode: 'vyntage',
@@ -86,22 +92,12 @@ const state = {
   lastSnapAt: 0, // suppresses the duplicate when both sides press at once
 }
 
-const remoteVideo = document.createElement('video')
-remoteVideo.muted = true
-remoteVideo.playsInline = true
-remoteVideo.autoplay = true
-
-const camVideo = document.createElement('video')
-camVideo.muted = true
-camVideo.playsInline = true
-
 let myFeed = null
-let theirFeed = null
 let net = null
 let rtc = null
 let cameraStream = null
 let cameraReady = false
-let renderStarted = false
+let watchStarted = false
 let previewTimer = null
 let cardTimer = null
 const pairs = new Map() // snapId -> { me, them, timer, done }
@@ -118,16 +114,25 @@ function setStatus(kind, text) {
   els.statusText.textContent = text
 }
 
+function refreshLook() {
+  applyLook([els.myPane, els.theirPane], settings)
+}
+
 function updatePartnerUI() {
   // VIDEO only when remote video frames actually land in the pane. A connection with no
   // flowing video (their camera is off) should read FRAMES, not lie.
-  const videoLive = state.rtcMode === 'live' && remoteVideo.videoWidth > 0
+  const videoLive = state.rtcMode === 'live' && els.theirVideo.videoWidth > 0
   const link = videoLive ? 'VIDEO' : state.rtcMode === 'frames' ? 'FRAMES' : 'CONNECTED'
   els.partnerPill.textContent = state.partner ? link : 'WAITING'
   els.partnerPill.classList.toggle('on', state.partner)
   if (state.partner) setStatus('live', 'LIVE 2/2')
   else if (net && net.connected) setStatus('open', state.room ? 'connected' : 'relay up')
   if (!state.partner) els.theirWait.hidden = false
+  if (videoLive) {
+    els.theirVideo.hidden = false
+    els.theirCam.hidden = true
+    els.theirWait.hidden = true
+  }
 }
 
 function teardownRtc() {
@@ -135,7 +140,7 @@ function teardownRtc() {
     rtc.close()
     rtc = null
   }
-  remoteVideo.srcObject = null
+  els.theirVideo.srcObject = null
   state.rtcMode = 'idle'
   state.partnerId = null
   state.rtcRetries = 0
@@ -194,10 +199,11 @@ async function enterSession(room) {
 
   if (firstTime) {
     clearPhotos(false) // a new session starts with a clean strip
-    if (!theirFeed) theirFeed = createFeed({ video: remoteVideo, canvas: els.theirCam, settings })
+    startWatchLoop()
     const cameraDone = startCamera()
     ensureNet() // connect to the relay while the camera warms up
     buildFilterChips()
+    refreshLook()
     await cameraDone
     buildFilterChips()
   }
@@ -205,7 +211,7 @@ async function enterSession(room) {
   updatePartnerUI()
 }
 
-// ---- camera + feeds ----------------------------------------------------------
+// ---- camera ------------------------------------------------------------------
 
 async function startCamera() {
   if (cameraReady) return
@@ -214,14 +220,14 @@ async function startCamera() {
       video: { width: { ideal: 1280 }, height: { ideal: 720 } },
       audio: false,
     })
-    camVideo.srcObject = cameraStream
-    await camVideo.play()
+    els.myVideo.srcObject = cameraStream
+    await els.myVideo.play()
 
-    // Wait for real frames before rendering, so the pane never starts half-alive.
-    for (let i = 0; i < 100 && !camVideo.videoWidth; i += 1) {
+    // Wait for real frames before declaring the camera up.
+    for (let i = 0; i < 100 && !els.myVideo.videoWidth; i += 1) {
       await new Promise((resolve) => setTimeout(resolve, 20))
     }
-    if (!camVideo.videoWidth) throw new Error('camera produced no frames')
+    if (!els.myVideo.videoWidth) throw new Error('camera produced no frames')
 
     const [track] = cameraStream.getVideoTracks()
     if (track) {
@@ -232,9 +238,8 @@ async function startCamera() {
       })
     }
 
-    myFeed = createFeed({ video: camVideo, canvas: els.myCam, settings })
+    myFeed = createFeed({ video: els.myVideo, settings })
     cameraReady = true
-    startRenderLoop()
     startPreviewLoop()
   } catch (error) {
     showError('No camera. Allow camera access, or open this page in a real tab.')
@@ -257,22 +262,15 @@ function stopCamera() {
   cameraReady = false
 }
 
-function startRenderLoop() {
-  if (renderStarted) return
-  renderStarted = true
-  let last = 0
-  const tick = (now) => {
-    if (state.inSession && now - last > 33) {
-      last = now
-      if (cameraReady && myFeed) myFeed.frame()
-      if (theirFeed) theirFeed.frame()
-      if (remoteVideo.videoWidth > 0) {
-        els.theirWait.hidden = true
-        if (!state.remoteShown) {
-          state.remoteShown = true
-          updatePartnerUI()
-        }
-      }
+/** Cheap watcher: the video elements draw themselves, this only notices when the
+ *  partner's first frame lands (pane swap + pill) and keeps nothing else warm. */
+function startWatchLoop() {
+  if (watchStarted) return
+  watchStarted = true
+  const tick = () => {
+    if (state.inSession && els.theirVideo.videoWidth > 0 && !state.remoteShown) {
+      state.remoteShown = true
+      updatePartnerUI()
     }
     requestAnimationFrame(tick)
   }
@@ -291,8 +289,10 @@ function startPreviewLoop() {
     state.previewBusy = true
     try {
       const blob = await myFeed.previewBlob()
-      const bytes = new Uint8Array(await blob.arrayBuffer())
-      net.sendBinary(encodeFrame(KIND.PREVIEW, { id: state.myId }, bytes))
+      if (blob) {
+        const bytes = new Uint8Array(await blob.arrayBuffer())
+        net.sendBinary(encodeFrame(KIND.PREVIEW, { id: state.myId }, bytes))
+      }
     } finally {
       state.previewBusy = false
     }
@@ -311,6 +311,7 @@ function buildFilterChips() {
     button.addEventListener('click', () => {
       settings.filterMode = filter.id
       buildFilterChips()
+      refreshLook()
       broadcastSettings()
     })
     if (settings.filterMode === filter.id) button.classList.add('is-active')
@@ -325,6 +326,7 @@ function applyControlValues(broadcast = true) {
   settings.mirror = els.mirror.checked
   els.grainOut.textContent = els.grain.value
   els.pixelOut.textContent = els.pixel.value
+  refreshLook()
   if (broadcast) broadcastSettings()
 }
 
@@ -336,6 +338,7 @@ function syncControls() {
   els.grainOut.textContent = settings.grain
   els.pixelOut.textContent = settings.pixelSize
   buildFilterChips()
+  refreshLook()
 }
 
 function broadcastSettings() {
@@ -456,8 +459,8 @@ function ensureRtc() {
       if (net) net.send(obj)
     },
     onRemoteStream: (stream) => {
-      remoteVideo.srcObject = stream
-      remoteVideo.play().catch(() => undefined)
+      els.theirVideo.srcObject = stream
+      els.theirVideo.play().catch(() => undefined)
     },
     onState: (connectionState) => {
       if (connectionState === 'connected') {
@@ -508,6 +511,8 @@ async function drawTheirPreview(payload) {
   const ctx = els.theirCam.getContext('2d')
   ctx.drawImage(bitmap, 0, 0, els.theirCam.width, els.theirCam.height)
   bitmap.close()
+  els.theirCam.hidden = false
+  els.theirVideo.hidden = true
   els.theirWait.hidden = true
 }
 
@@ -707,6 +712,10 @@ els.copyBtn.addEventListener('click', async () => {
 els.errorClose.addEventListener('click', () => {
   els.errorCard.hidden = true
 })
+
+const today = new Date().toISOString().slice(0, 10)
+els.myStamp.textContent = today
+els.theirStamp.textContent = today
 
 window.addEventListener('hashchange', route)
 window.addEventListener('beforeunload', () => {

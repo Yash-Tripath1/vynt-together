@@ -1,6 +1,6 @@
 {
   "name": "vynt-together",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "One link, two cameras, one photo booth. See each other's viewfinder, click photos together, make a collage.",
   "type": "module",
   "scripts": {
